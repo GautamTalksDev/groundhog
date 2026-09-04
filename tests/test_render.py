@@ -12,6 +12,7 @@ from gh.render import (
     render_json,
     render_text,
     stability_sentence,
+    _empty_repeat_message,
     _format_timespan,
 )
 
@@ -115,6 +116,34 @@ class RenderTextTests(unittest.TestCase):
         self.assertIn("NOT COUNTED", text)
         self.assertIn("WHERE YOUR TOKENS WENT", text)
 
+    def test_empty_suggestion_days_14_min_runs_3(self) -> None:
+        msg = _empty_repeat_message(14, 3)
+        self.assertIn(
+            "No chore repeated across 3+ separate sessions in the last 14 days.",
+            msg,
+        )
+        self.assertIn("Try --days 30 or --min-runs 2.", msg)
+        self.assertNotIn("several months", msg)
+
+    def test_empty_suggestion_days_60_min_runs_3(self) -> None:
+        msg = _empty_repeat_message(60, 3)
+        self.assertIn(
+            "No chore repeated across 3+ separate sessions in the last 60 days.",
+            msg,
+        )
+        self.assertIn("several months of history", msg)
+        self.assertNotIn("Try --days 30", msg)
+        self.assertIn("Try --min-runs 2.", msg)
+
+    def test_empty_suggestion_days_60_min_runs_2(self) -> None:
+        msg = _empty_repeat_message(60, 2)
+        self.assertIn(
+            "No chore repeated across 2+ separate sessions in the last 60 days.",
+            msg,
+        )
+        self.assertIn("several months of history", msg)
+        self.assertNotIn("Try --", msg)
+
     def test_empty_state_wide_window_does_not_suggest_stale_knobs(self) -> None:
         report = build_report(
             days=60,
@@ -132,7 +161,7 @@ class RenderTextTests(unittest.TestCase):
         )
         self.assertIn("several months of history", text)
         self.assertNotIn("Try --days 30", text)
-        self.assertNotIn("Try --min-runs 2", text)
+        self.assertIn("Try --min-runs 2.", text)
         self.assertIn("(no project totals in this window)", text)
 
     def test_empty_candidates_still_show_session_project_totals(self) -> None:

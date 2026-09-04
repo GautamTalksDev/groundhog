@@ -51,8 +51,41 @@ class PipelineResult:
     notes: list[str]
 
 
+def _positive_int(flag: str):
+    """argparse type factory: reject zero/negative and name the flag."""
+
+    def parse(value: str) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise argparse.ArgumentTypeError(
+                f"{flag} must be a positive integer, got {value!r}"
+            ) from exc
+        if parsed < 1:
+            raise argparse.ArgumentTypeError(
+                f"{flag} must be a positive integer (>= 1), got {parsed}"
+            )
+        return parsed
+
+    parse.__name__ = "positive_int"
+    return parse
+
+
+class _GroundhogArgumentParser(argparse.ArgumentParser):
+    """Treat a leading-dash integer as a value so ``--days -5`` hits the type."""
+
+    def _parse_optional(self, arg_string):  # noqa: PLR6301 — argparse hook
+        if arg_string and arg_string[0] in self.prefix_chars and len(arg_string) > 1:
+            rest = arg_string[1:]
+            if rest[0] in self.prefix_chars:
+                rest = rest[1:]
+            if rest.isdigit():
+                return None
+        return super()._parse_optional(arg_string)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _GroundhogArgumentParser(
         prog="groundhog",
         description=(
             "Read local Claude Code / Codex session history and tell you "
@@ -61,7 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--days",
-        type=int,
+        type=_positive_int("--days"),
         default=14,
         help="Look back this many days (default: 14)",
     )
@@ -79,13 +112,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--top",
-        type=int,
+        type=_positive_int("--top"),
         default=3,
         help="Number of top candidates to show (default: 3)",
     )
     parser.add_argument(
         "--min-runs",
-        type=int,
+        type=_positive_int("--min-runs"),
         default=3,
         help="Minimum distinct sessions for a candidate (default: 3)",
     )

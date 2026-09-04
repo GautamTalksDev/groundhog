@@ -532,20 +532,21 @@ def _empty_repeat_message(days: int, min_runs: int) -> str:
         f"No chore repeated across {min_runs}+ separate sessions "
         f"in the last {days} days."
     )
+    parts = [core]
     if days >= 30:
-        return (
-            core
-            + " Groundhog needs several months of history before "
+        parts.append(
+            "Groundhog needs several months of history before "
             "patterns emerge for most people."
         )
     hints: list[str] = []
-    if days < 30:
+    # Never suggest a smaller-or-equal window, or a higher-or-equal threshold.
+    if 30 > days:
         hints.append("--days 30")
-    if min_runs > 2:
+    if 2 < min_runs:
         hints.append("--min-runs 2")
     if hints:
-        return f"{core} Try {' or '.join(hints)}."
-    return core
+        parts.append(f"Try {' or '.join(hints)}.")
+    return " ".join(parts)
 
 
 def _format_timespan(

@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import unittest
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -91,11 +92,14 @@ class E2ETests(unittest.TestCase):
     def test_pipeline_with_fixture_home(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = _write_home(Path(tmp))
+            buf = StringIO()
             with mock.patch.dict(os.environ, {"HOME": str(home)}):
-                code = main(
-                    ["--days", "30", "--min-runs", "3", "--top", "3"]
-                )
+                with mock.patch("sys.stdout", buf):
+                    code = main(
+                        ["--days", "30", "--min-runs", "3", "--top", "3"]
+                    )
             self.assertEqual(code, 0)
+            self.assertIn("GROUNDHOG", buf.getvalue())
 
     def test_pipeline_prints_readable_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
