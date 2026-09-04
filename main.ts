@@ -12,7 +12,7 @@
  *   author: groundhog
  * metadata:
  *   rote_version: 0.79.0
- *   version: 0.1.1
+ *   version: 0.2.0
  *   status: released
  *   kind: atomic
  *   flow_type: sequential
@@ -50,9 +50,17 @@
  *   default: "true"
  *   description: "Scrub secret-like strings and truncate evidence (true/false)"
  * steps:
+ *   selfcheck:
+ *     type: process.exec
+ *     timeout_ms: 10000
+ *     argv:
+ *       - python3
+ *       - "@resource{python/steps/selfcheck.py}"
+ *       - artifacts/selfcheck.json
  *   discover_claude:
  *     type: process.exec
  *     timeout_ms: 60000
+ *     depends_on: [selfcheck]
  *     argv:
  *       - python3
  *       - "@resource{python/steps/discover_claude.py}"
@@ -61,6 +69,7 @@
  *   discover_codex:
  *     type: process.exec
  *     timeout_ms: 60000
+ *     depends_on: [selfcheck]
  *     argv:
  *       - python3
  *       - "@resource{python/steps/discover_codex.py}"
@@ -69,6 +78,7 @@
  *   discover_cursor:
  *     type: process.exec
  *     timeout_ms: 60000
+ *     depends_on: [selfcheck]
  *     argv:
  *       - python3
  *       - "@resource{python/steps/discover_cursor.py}"
@@ -125,7 +135,7 @@
  *   report:
  *     type: process.exec
  *     timeout_ms: 60000
- *     depends_on: [rank, parse]
+ *     depends_on: [rank, parse, selfcheck]
  *     argv:
  *       - python3
  *       - "@resource{python/steps/report.py}"
@@ -136,6 +146,7 @@
  *       - $redact
  *       - artifacts/report.json
  *       - artifacts/parse.json
+ *       - artifacts/selfcheck.json
  * ---
  */
 

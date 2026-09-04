@@ -35,6 +35,12 @@ from gh.discover import (
 )
 from gh.intents import extract_intents
 from gh.parse import ParseResult, parse_sessions
+from gh.selfcheck import (
+    SelfCheckResult,
+    failed_selfcheck,
+    report_kwargs as selfcheck_report_kwargs,
+    run_selfcheck,
+)
 from gh.rank import RankResult, score_candidates
 from gh.render import (
     Report,
@@ -57,6 +63,7 @@ class PipelineResult:
     rank_result: RankResult
     discovery: DiscoveryResult
     notes: list[str]
+    selfcheck: SelfCheckResult | None = None
 
 
 def _positive_int(flag: str):
@@ -245,6 +252,7 @@ def _fallback_report(
     notes: list[str],
     discovery: DiscoveryResult | None = None,
     locations: list[str] | None = None,
+    selfcheck: SelfCheckResult | None = None,
 ) -> Report:
     discovery = discovery or _empty_discovery()
     return build_report(
@@ -259,6 +267,7 @@ def _fallback_report(
         extra_not_counted=notes,
         locations_checked=locations or checked_locations(),
         redact=args.redact,
+        **selfcheck_report_kwargs(selfcheck),
     )
 
 
@@ -268,6 +277,11 @@ def run_pipeline(args: argparse.Namespace) -> PipelineResult:
     started = time.monotonic()
     deadline = started + TIME_BUDGET_SECONDS
     locations = checked_locations()
+
+    try:
+        selfcheck = run_selfcheck()
+    except Exception as exc:  # noqa: BLE001 — never crash a scan
+        selfcheck = failed_selfcheck(f"raised {type(exc).__name__}: {exc}")
 
     discovery = _safe_stage(
         "discovery",
@@ -400,10 +414,15 @@ def run_pipeline(args: argparse.Namespace) -> PipelineResult:
             ),
             date_range=date_range_for_sessions(parsed.sessions),
             rediscovery=rediscovery,
+            **selfcheck_report_kwargs(selfcheck),
         ),
         notes,
         _fallback_report(
-            args, notes=notes, discovery=discovery, locations=locations
+            args,
+            notes=notes,
+            discovery=discovery,
+            locations=locations,
+            selfcheck=selfcheck,
         ),
     )
     return PipelineResult(
@@ -412,6 +431,7 @@ def run_pipeline(args: argparse.Namespace) -> PipelineResult:
         rank_result=rank_result if isinstance(rank_result, RankResult) else RankResult(),
         discovery=discovery if isinstance(discovery, DiscoveryResult) else _empty_discovery(),
         notes=notes,
+        selfcheck=selfcheck,
     )
 
 
@@ -496,6 +516,7 @@ def main(argv: list[str] | None = None) -> int:
             rank_result=RankResult(),
             discovery=_empty_discovery(),
             notes=[f"pipeline failed ({type(exc).__name__}: {exc})"],
+            selfcheck=None,
         )
 
     try:

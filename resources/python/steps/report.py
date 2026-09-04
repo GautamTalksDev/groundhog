@@ -26,6 +26,11 @@ from gh.render import (  # noqa: E402
     render_json,
     render_text,
 )
+from gh.selfcheck import (  # noqa: E402
+    failed_selfcheck,
+    report_kwargs as selfcheck_report_kwargs,
+    result_from_dict,
+)
 
 
 def main(argv: list[str]) -> int:
@@ -38,6 +43,7 @@ def main(argv: list[str]) -> int:
     redact = redact_raw not in ("0", "false", "no", "off")
     out_path = argv[6] if len(argv) > 6 else None
     parse_path = argv[7] if len(argv) > 7 else None
+    selfcheck_path = argv[8] if len(argv) > 8 else None
 
     meta = payload.get("meta") or {}
     candidates = []
@@ -126,6 +132,7 @@ def main(argv: list[str]) -> int:
         sessions_without_model=count_sessions_without_model(sessions),
         date_range=date_range_for_sessions(sessions),
         rediscovery=measure_context_rediscovery(sessions),
+        **selfcheck_report_kwargs(_load_selfcheck(selfcheck_path)),
     )
     out = {"text": render_text(report), "json": json.loads(render_json(report))}
     write_artifact(out_path, out)
@@ -168,6 +175,16 @@ def _hydrate_sessions(payload: dict) -> list[Session]:
             )
         )
     return sessions
+
+
+def _load_selfcheck(path: str | None):
+    if not path:
+        return failed_selfcheck("self-check artifact was not passed to report")
+    payload = load_json_arg(path)
+    result = result_from_dict(payload)
+    if result is None:
+        return failed_selfcheck("self-check artifact was missing or unreadable")
+    return result
 
 
 if __name__ == "__main__":

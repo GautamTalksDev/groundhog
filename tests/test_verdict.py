@@ -11,6 +11,7 @@ from gh.render import (
     VERDICT_NULL,
     VERDICT_PARTIAL,
     VERDICT_REPEATED,
+    VERDICT_SELFCHECK_FAILED,
     build_report,
     classify_verdict,
     render_text,
@@ -212,6 +213,37 @@ class RenderVerdictTests(unittest.TestCase):
         ):
             self.assertIn(field, text)
         self.assertIn("58,578", text)
+
+
+class SelfCheckVerdictTests(unittest.TestCase):
+    def test_failed_selfcheck_is_the_verdict_and_keeps_findings(self) -> None:
+        report = _report(
+            rank_result=RankResult(candidates=[_cand()]),
+            selfcheck_ok=False,
+            selfcheck_passed=6,
+            selfcheck_total=7,
+            selfcheck_ms=18.0,
+            selfcheck_headline=(
+                "Self-check: FAILED (6/7) — "
+                "THIS ANALYZER IS NOT BEHAVING AS BUILT"
+            ),
+            selfcheck_failures=[
+                (
+                    "cluster_three_sessions",
+                    "expected a cluster of 3 distinct sessions, got 0",
+                )
+            ],
+            selfcheck_coverage="6/7 failed · 18ms",
+        )
+        self.assertEqual(report.verdict, VERDICT_SELFCHECK_FAILED)
+        self.assertEqual(report.would_have_been, VERDICT_REPEATED)
+        text = render_text(report)
+        self.assertTrue(text.startswith("Self-check: FAILED (6/7)"))
+        self.assertIn(VERDICT_SELFCHECK_FAILED, text)
+        self.assertIn("(would have been: REPEATED WORK FOUND)", text)
+        self.assertIn("cluster_three_sessions:", text)
+        self.assertIn("Re-run the garak smoke report", text)
+        self.assertIn("6/7 failed · 18ms", text)
 
 
 if __name__ == "__main__":

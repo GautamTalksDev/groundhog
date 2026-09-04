@@ -99,7 +99,12 @@ class E2ETests(unittest.TestCase):
                         ["--days", "30", "--min-runs", "3", "--top", "3"]
                     )
             self.assertEqual(code, 0)
-            self.assertIn("GROUNDHOG", buf.getvalue())
+            text = buf.getvalue()
+            self.assertTrue(
+                text.startswith("Self-check: PASSED"),
+                text.split("\n", 1)[0],
+            )
+            self.assertIn("GROUNDHOG", text)
 
     def test_pipeline_prints_readable_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -118,6 +123,7 @@ class E2ETests(unittest.TestCase):
                 )
             self.assertEqual(code, 0)
             text = out.read_text(encoding="utf-8")
+            self.assertTrue(text.startswith("Self-check: PASSED"), text.split("\n", 1)[0])
             self.assertIn("GROUNDHOG", text)
             self.assertIn("PARTIAL SCAN", text)
             self.assertIn("YOU KEEP REDOING THIS", text)

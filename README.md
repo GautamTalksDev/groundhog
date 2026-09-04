@@ -17,6 +17,8 @@ That scan looks back 30 days. From a checkout you can also run `python3 groundho
 This is a real report from the repo's own test fixtures. The scan is partial because the fixture set includes a broken JSONL file on purpose.
 
 ```
+Self-check: PASSED (7/7 bundled analyzer cases)
+
 GROUNDHOG · 5 sessions · last 30 days · Claude Code
 
 PARTIAL SCAN — NOT A CLEAN RESULT
@@ -32,6 +34,7 @@ COVERAGE
   date range covered          2026-08-22 → 2026-09-03
   sessions with token counts  3
   threshold used              3 distinct sessions
+  self-check                  7/7 passed · 12ms
 
 THE WORK YOUR AGENT REDOES EVERY SESSION
   0 sessions had a first edit — not enough to report rates (need 5).
@@ -64,15 +67,19 @@ Dollars print only when the session file itself contained a model id and token c
 
 ## How it works
 
-The Play is a nine-step DAG in `main.ts`. Three discovery steps run in parallel. Parse waits for all three. Report reads both the ranked chores and the parsed sessions (so it can measure context rediscovery).
+The Play is a ten-step DAG in `main.ts`. Self-check runs first. Three discovery steps then run in parallel. Parse waits for all three. Report reads the ranked chores, the parsed sessions, and the self-check artifact.
 
 ```mermaid
 flowchart TD
+  S[selfcheck]
   subgraph discovery [Discovery]
     A[discover_claude]
     B[discover_codex]
     C[discover_cursor]
   end
+  S --> A
+  S --> B
+  S --> C
   A --> P[parse]
   B --> P
   C --> P
@@ -82,15 +89,17 @@ flowchart TD
   O --> R[rank]
   R --> T[report]
   P --> T
+  S --> T
 ```
 
+0. **selfcheck** runs bundled fixture cases through the real analyzer before any user data is read. The first line of the report is `Self-check: PASSED` or a refusal that still prints the findings.
 1. **discover_*** walk the harness directories under your home folder and collect `*.jsonl` files whose mtime falls inside the window.
 2. **parse** streams each file line by line, smallest first, and stops after about 20 seconds if the pile is huge.
 3. **intents** keeps substantive user asks (first ask in a session, plus later turns that look like a new task). Acknowledgements and corrections are dropped.
 4. **cluster** groups those asks. A chore counts only when it appears in `min_runs` distinct sessions (default 3). Turns inside one conversation do not count as repeats.
 5. **cost** uses token fields from the file when they exist. Otherwise it estimates from text length and labels that estimate. Prices come from the bundled `prices.json`.
 6. **rank** orders clusters by frequency, cost, stability, and recency.
-7. **report** prints the verdict, the coverage ledger, the rediscovery section, the ranked chores, project token totals, and NOT COUNTED.
+7. **report** prints the self-check line, the verdict, the coverage ledger (including self-check cost), the rediscovery section, the ranked chores, project token totals, and NOT COUNTED.
 
 The CLI (`groundhog.py`) runs the same logic in one process.
 
@@ -100,6 +109,7 @@ The verdict is the first line under the header. A partial scan never renders as 
 
 | Verdict | When it fires |
 |---------|----------------|
+| `ANALYZER FAILED ITS OWN SELF-CHECK — FINDINGS BELOW CANNOT BE RELIED ON` | A bundled fixture case failed. The report still prints findings and names what the verdict would otherwise have been. This is never a clean result. |
 | `NO SUPPORTED HISTORY FOUND` | Every harness directory is absent. |
 | `PARTIAL SCAN — NOT A CLEAN RESULT` | A harness directory was unreadable, a session file was skipped, a JSONL line was malformed, the 20-second parse budget stopped the walk, or a pipeline stage failed. This wins even if clusters were found. |
 | `INSUFFICIENT HISTORY` | The scan was clean and fewer than `min_runs` sessions were parsed. |

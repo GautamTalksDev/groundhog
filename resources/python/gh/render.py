@@ -34,6 +34,9 @@ VERDICT_NULL = "DEFENSIBLE NULL"
 VERDICT_PARTIAL = "PARTIAL SCAN — NOT A CLEAN RESULT"
 VERDICT_INSUFFICIENT = "INSUFFICIENT HISTORY"
 VERDICT_NO_HISTORY = "NO SUPPORTED HISTORY FOUND"
+VERDICT_SELFCHECK_FAILED = (
+    "ANALYZER FAILED ITS OWN SELF-CHECK — FINDINGS BELOW CANNOT BE RELIED ON"
+)
 
 
 @dataclass
@@ -100,6 +103,7 @@ class Coverage:
     date_range: str = "none"
     sessions_with_tokens: int = 0
     threshold: int = 0
+    selfcheck: str = ""
 
 
 @dataclass
@@ -126,6 +130,13 @@ class Report:
     coverage: Coverage = field(default_factory=Coverage)
     sessions_without_model: int = 0
     rediscovery: Optional[RediscoveryReport] = None
+    selfcheck_ok: Optional[bool] = None
+    selfcheck_passed: int = 0
+    selfcheck_total: int = 0
+    selfcheck_ms: float = 0.0
+    selfcheck_headline: str = ""
+    selfcheck_failures: list[tuple[str, str]] = field(default_factory=list)
+    would_have_been: str = ""
 
 
 def build_report(
@@ -150,6 +161,13 @@ def build_report(
     sessions_without_model: int = 0,
     date_range: str = "none",
     rediscovery: Optional[RediscoveryReport] = None,
+    selfcheck_ok: Optional[bool] = None,
+    selfcheck_passed: int = 0,
+    selfcheck_total: int = 0,
+    selfcheck_ms: float = 0.0,
+    selfcheck_headline: str = "",
+    selfcheck_failures: list[tuple[str, str]] | None = None,
+    selfcheck_coverage: str = "",
 ) -> Report:
     """Assemble the shared report model from pipeline outputs."""
     from gh.redact import EVIDENCE_LIMIT, redact_text
@@ -207,6 +225,11 @@ def build_report(
     ]
     files_skipped = len(real_skipped) - len(dir_skips) + unread
     files_parsed = max(0, files_read - len(opened_skips))
+    coverage_selfcheck = selfcheck_coverage
+    if not coverage_selfcheck and selfcheck_total:
+        ms = max(0, int(round(selfcheck_ms)))
+        status = "passed" if selfcheck_ok else "failed"
+        coverage_selfcheck = f"{selfcheck_passed}/{selfcheck_total} {status} · {ms}ms"
     coverage = Coverage(
         directories_checked=len(locations_checked or []),
         agents_detected=found,
@@ -218,6 +241,7 @@ def build_report(
         date_range=date_range or "none",
         sessions_with_tokens=sessions_with_tokens,
         threshold=min_runs,
+        selfcheck=coverage_selfcheck,
     )
     verdict = classify_verdict(
         harness_statuses=harness_statuses,
@@ -229,6 +253,10 @@ def build_report(
         time_truncated=time_truncated,
         extra_notes=extra_not_counted or [],
     )
+    would_have_been = ""
+    if selfcheck_ok is False:
+        would_have_been = verdict
+        verdict = VERDICT_SELFCHECK_FAILED
 
     return Report(
         days=days,
@@ -250,6 +278,13 @@ def build_report(
         coverage=coverage,
         sessions_without_model=sessions_without_model,
         rediscovery=rediscovery,
+        selfcheck_ok=selfcheck_ok,
+        selfcheck_passed=selfcheck_passed,
+        selfcheck_total=selfcheck_total,
+        selfcheck_ms=selfcheck_ms,
+        selfcheck_headline=selfcheck_headline,
+        selfcheck_failures=list(selfcheck_failures or []),
+        would_have_been=would_have_been,
     )
 
 
@@ -334,6 +369,8 @@ def _coverage_lines(coverage: Coverage) -> list[str]:
             f"{'s' if coverage.threshold != 1 else ''}",
         ),
     ]
+    if coverage.selfcheck:
+        rows.append(("self-check", coverage.selfcheck))
     width = max(len(label) for label, _ in rows)
     lines = ["COVERAGE"]
     for label, value in rows:
@@ -479,13 +516,23 @@ def render_text(report: Report) -> str:
         if report.harnesses_found
         else "no tools found"
     )
-    lines: list[str] = [
-        f"GROUNDHOG · {report.session_count} sessions · "
-        f"last {report.days} days · {harnesses}",
-        "",
-        report.verdict,
-        "",
-    ]
+    lines: list[str] = []
+    if report.selfcheck_headline:
+        lines.append(report.selfcheck_headline)
+        for name, detail in report.selfcheck_failures:
+            lines.append(f"  · {name}: {detail}")
+        lines.append("")
+    lines.extend(
+        [
+            f"GROUNDHOG · {report.session_count} sessions · "
+            f"last {report.days} days · {harnesses}",
+            "",
+            report.verdict,
+        ]
+    )
+    if report.verdict == VERDICT_SELFCHECK_FAILED and report.would_have_been:
+        lines.append(f"(would have been: {report.would_have_been})")
+    lines.append("")
     lines.extend(_coverage_lines(report.coverage))
     lines.append("")
     lines.extend(_rediscovery_lines(report))
@@ -624,6 +671,18 @@ def render_json(report: Report) -> str:
         "locations_checked": report.locations_checked,
         "redacted": report.redacted,
         "verdict": report.verdict,
+        "would_have_been": report.would_have_been or None,
+        "selfcheck": {
+            "ok": report.selfcheck_ok,
+            "passed": report.selfcheck_passed,
+            "total": report.selfcheck_total,
+            "elapsed_ms": round(report.selfcheck_ms, 3),
+            "headline": report.selfcheck_headline,
+            "failures": [
+                {"name": name, "detail": detail}
+                for name, detail in report.selfcheck_failures
+            ],
+        },
         "coverage": {
             "directories_checked": report.coverage.directories_checked,
             "agents_detected": report.coverage.agents_detected,
@@ -635,6 +694,7 @@ def render_json(report: Report) -> str:
             "date_range": report.coverage.date_range,
             "sessions_with_tokens": report.coverage.sessions_with_tokens,
             "threshold": report.coverage.threshold,
+            "selfcheck": report.coverage.selfcheck,
         },
         "rediscovery": _rediscovery_json(report.rediscovery),
     }
