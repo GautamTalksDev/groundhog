@@ -16,8 +16,9 @@ from gh.cost import (  # noqa: E402
     load_prices,
     project_costs_from_sessions,
 )
+from gh.context_rediscovery import measure_context_rediscovery  # noqa: E402
 from gh.discover import checked_locations  # noqa: E402
-from gh.parse import Session, Turn  # noqa: E402
+from gh.parse import Session, ToolCall, Turn  # noqa: E402
 from gh.rank import Candidate, EvidenceItem, RankResult  # noqa: E402
 from gh.render import (  # noqa: E402
     build_report,
@@ -124,6 +125,7 @@ def main(argv: list[str]) -> int:
         sessions_with_tokens=count_sessions_with_tokens(sessions),
         sessions_without_model=count_sessions_without_model(sessions),
         date_range=date_range_for_sessions(sessions),
+        rediscovery=measure_context_rediscovery(sessions),
     )
     out = {"text": render_text(report), "json": json.loads(render_json(report))}
     write_artifact(out_path, out)
@@ -155,6 +157,14 @@ def _hydrate_sessions(payload: dict) -> list[Session]:
                 ended_at=s.get("ended_at"),
                 turns=turns,
                 parse_status=s.get("parse_status") or "ok",
+                tool_calls=[
+                    ToolCall(
+                        name=tc.get("name") or "tool",
+                        path=tc.get("path"),
+                        command=tc.get("command"),
+                    )
+                    for tc in s.get("tool_calls") or []
+                ],
             )
         )
     return sessions

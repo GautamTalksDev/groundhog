@@ -9,6 +9,7 @@ from typing import Any, Optional
 from gh import SCHEMA_VERSION
 from gh.cost import ProjectCost
 from gh.rank import Candidate, RankResult
+from gh.context_rediscovery import RediscoveryReport
 
 # Friendly harness labels for strangers (never leak snake_case internals).
 _HARNESS_LABELS = {
@@ -119,6 +120,7 @@ class Report:
     verdict: str = VERDICT_NO_HISTORY
     coverage: Coverage = field(default_factory=Coverage)
     sessions_without_model: int = 0
+    rediscovery: Optional[RediscoveryReport] = None
 
 
 def build_report(
@@ -142,6 +144,7 @@ def build_report(
     sessions_with_tokens: int = 0,
     sessions_without_model: int = 0,
     date_range: str = "none",
+    rediscovery: Optional[RediscoveryReport] = None,
 ) -> Report:
     """Assemble the shared report model from pipeline outputs."""
     from gh.redact import EVIDENCE_LIMIT, redact_text
@@ -173,7 +176,9 @@ def build_report(
         shown_count=len(shown),
         top=top,
         candidates_shown=shown,
-        extra=extra_not_counted or [],
+        extra=(extra_not_counted or []) + list(
+            (rediscovery.notes if rediscovery else [])
+        ),
         time_truncated=time_truncated,
         files_read=files_read,
         files_total=files_total,
@@ -227,6 +232,7 @@ def build_report(
         verdict=verdict,
         coverage=coverage,
         sessions_without_model=sessions_without_model,
+        rediscovery=rediscovery,
     )
 
 
@@ -318,6 +324,135 @@ def _coverage_lines(coverage: Coverage) -> list[str]:
     return lines
 
 
+def _rediscovery_lines(report: Report) -> list[str]:
+    """Always emit the rediscovery section, including on a defensible null."""
+    from gh.redact import redact_text
+
+    rd = report.rediscovery
+    lines = ["THE WORK YOUR AGENT REDOES EVERY SESSION"]
+    if rd is None:
+        lines.append("  (not measured)")
+        lines.append("")
+        return lines
+    if rd.sessions_with_tools == 0 and not rd.harnesses_excluded:
+        if rd.notes and "no sessions" in rd.notes[0]:
+            lines.append("  No sessions to measure.")
+        else:
+            lines.append("  No tool-use blocks in this window.")
+        lines.append("")
+        return lines
+    if not rd.sufficient:
+        n = rd.resolvable_sessions
+        lines.append(
+            f"  {n} session{'s' if n != 1 else ''} had a first edit — "
+            "not enough to report rates (need 5)."
+        )
+        for note in rd.notes:
+            lines.append(f"  {note[0].upper() + note[1:]}" if note else "")
+        lines.append("")
+        return lines
+
+    pct = _fmt_pct(rd.pattern_pct)
+    median = _fmt_count(rd.median_prefix)
+    p90 = _fmt_count(rd.p90_prefix)
+    explore = _fmt_pct(rd.explore_pct)
+    lines.append(
+        f"  {pct} of sessions begin by re-deriving the same context"
+    )
+    lines.append(
+        f"  Median {median} tool calls before the first edit (p90 {p90})"
+    )
+    lines.append(
+        f"  {explore} of all tool calls happen before any change is made"
+    )
+    if rd.top_files:
+        lines.append("  Files re-read across the most sessions:")
+        shown = [
+            (_display_path(item.path, redact=report.redacted), item.sessions)
+            for item in rd.top_files
+        ]
+        width = max(len(path) for path, _ in shown)
+        for path, count in shown:
+            if report.redacted:
+                path = redact_text(path, limit=None)
+            lines.append(
+                f"    {path.ljust(width)}  re-read in {count} session"
+                f"{'s' if count != 1 else ''}"
+            )
+    if rd.per_project:
+        bits = []
+        for proj in rd.per_project[:8]:
+            name = proj.project
+            if report.redacted:
+                name = redact_text(name, limit=None)
+            bits.append(
+                f"{name} {proj.sessions} session"
+                f"{'s' if proj.sessions != 1 else ''}, "
+                f"median {proj.median_prefix} calls to first edit"
+            )
+        lines.append("  Per project: " + "; ".join(bits))
+    if rd.no_mutation_sessions:
+        n = rd.no_mutation_sessions
+        lines.append(
+            f"  {n} session{'s' if n != 1 else ''} never made an edit "
+            "(not folded into the median)"
+        )
+    lines.append("")
+    return lines
+
+
+def _rediscovery_json(rd: Optional[RediscoveryReport]) -> Optional[dict[str, Any]]:
+    if rd is None:
+        return None
+    return {
+        "resolvable_sessions": rd.resolvable_sessions,
+        "no_mutation_sessions": rd.no_mutation_sessions,
+        "sessions_with_tools": rd.sessions_with_tools,
+        "harnesses_excluded": rd.harnesses_excluded,
+        "sufficient": rd.sufficient,
+        "pattern_pct": rd.pattern_pct,
+        "median_prefix": rd.median_prefix,
+        "p90_prefix": rd.p90_prefix,
+        "explore_pct": rd.explore_pct,
+        "top_files": [
+            {"path": f.path, "sessions": f.sessions} for f in rd.top_files
+        ],
+        "per_project": [
+            {
+                "project": p.project,
+                "sessions": p.sessions,
+                "median_prefix": p.median_prefix,
+            }
+            for p in rd.per_project
+        ],
+        "notes": rd.notes,
+    }
+
+
+def _fmt_pct(value: Optional[float]) -> str:
+    if value is None:
+        return "n/a"
+    return f"{int(round(value))}%"
+
+
+def _fmt_count(value: Optional[float]) -> str:
+    if value is None:
+        return "n/a"
+    return str(int(round(value)))
+
+
+def _display_path(path: str, *, redact: bool = True) -> str:
+    text = (path or "").replace("\\", "/")
+    marker = "/projects/"
+    if marker in text:
+        text = text.split(marker, 1)[1]
+    else:
+        parts = [p for p in text.split("/") if p]
+        if len(parts) > 3:
+            text = "/".join(parts[-3:])
+    return text
+
+
 def render_text(report: Report) -> str:
     """Stranger-facing terminal report. Keep it to one screen."""
     from gh.redact import redact_report_strings
@@ -336,6 +471,7 @@ def render_text(report: Report) -> str:
     ]
     lines.extend(_coverage_lines(report.coverage))
     lines.append("")
+    lines.extend(_rediscovery_lines(report))
     lines.append("YOU KEEP REDOING THIS")
 
     if report.zero_sessions:
@@ -483,6 +619,7 @@ def render_json(report: Report) -> str:
             "sessions_with_tokens": report.coverage.sessions_with_tokens,
             "threshold": report.coverage.threshold,
         },
+        "rediscovery": _rediscovery_json(report.rediscovery),
     }
     text = json.dumps(payload, indent=2) + "\n"
     if report.redacted:

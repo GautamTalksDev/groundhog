@@ -68,6 +68,14 @@ def main(argv: list[str]) -> int:
                     }
                     for t in s.turns
                 ],
+                "tool_calls": [
+                    {
+                        "name": tc.name,
+                        "path": tc.path,
+                        "command": tc.command,
+                    }
+                    for tc in s.tool_calls
+                ],
             }
         )
 

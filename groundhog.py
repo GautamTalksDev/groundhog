@@ -26,6 +26,7 @@ from gh.cost import (
     load_prices,
     project_costs_from_sessions,
 )
+from gh.context_rediscovery import measure_context_rediscovery
 from gh.discover import (
     DiscoveryResult,
     checked_locations,
@@ -367,6 +368,13 @@ def run_pipeline(args: argparse.Namespace) -> PipelineResult:
         except Exception:  # noqa: BLE001
             notes.append("candidate dump failed")
 
+    rediscovery = _safe_stage(
+        "context rediscovery",
+        lambda: measure_context_rediscovery(parsed.sessions),
+        notes,
+        None,
+    )
+
     report = _safe_stage(
         "report build",
         lambda: build_report(
@@ -391,6 +399,7 @@ def run_pipeline(args: argparse.Namespace) -> PipelineResult:
                 parsed.sessions
             ),
             date_range=date_range_for_sessions(parsed.sessions),
+            rediscovery=rediscovery,
         ),
         notes,
         _fallback_report(

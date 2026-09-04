@@ -77,6 +77,15 @@ class Turn:
 
 
 @dataclass
+class ToolCall:
+    """One tool invocation in session order."""
+
+    name: str
+    path: Optional[str] = None
+    command: Optional[str] = None
+
+
+@dataclass
 class Session:
     """Normalized session transcript."""
 
@@ -87,6 +96,7 @@ class Session:
     ended_at: Optional[str]
     turns: list[Turn]
     parse_status: str
+    tool_calls: list[ToolCall] = field(default_factory=list)
 
 
 @dataclass
@@ -177,25 +187,57 @@ def parse_sessions(
 
 def _count_tool_calls(obj: dict) -> int:
     """Count tool_use / function_call blocks in one JSONL record."""
-    return _count_tool_blocks(obj)
+    return sum(1 for _ in _iter_tool_blocks(obj))
+
+
+def _iter_tool_blocks(value: Any):
+    if isinstance(value, dict):
+        if value.get("type") in ("tool_use", "function_call", "tool_call"):
+            yield value
+        for inner in value.values():
+            if isinstance(inner, (dict, list)):
+                yield from _iter_tool_blocks(inner)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _iter_tool_blocks(item)
+
+
+def _extract_tool_calls(obj: dict) -> list[ToolCall]:
+    """Pull ordered tool invocations from one JSONL record."""
+    calls: list[ToolCall] = []
+    for block in _iter_tool_blocks(obj):
+        raw_name = (
+            block.get("name")
+            or block.get("tool")
+            or block.get("call")
+            or ""
+        )
+        name = raw_name if isinstance(raw_name, str) else str(raw_name)
+        inp = block.get("input") or block.get("arguments") or {}
+        if not isinstance(inp, dict):
+            inp = {}
+        path = None
+        for key in ("path", "file_path", "target_file", "target_directory"):
+            val = inp.get(key)
+            if isinstance(val, str) and val.strip():
+                path = val.strip()
+                break
+        command = inp.get("command")
+        if not isinstance(command, str):
+            command = None
+        calls.append(ToolCall(name=name or "tool", path=path, command=command))
+    return calls
 
 
 def _count_tool_blocks(value: Any) -> int:
-    if isinstance(value, dict):
-        n = 1 if value.get("type") in ("tool_use", "function_call", "tool_call") else 0
-        for inner in value.values():
-            if isinstance(inner, (dict, list)):
-                n += _count_tool_blocks(inner)
-        return n
-    if isinstance(value, list):
-        return sum(_count_tool_blocks(item) for item in value)
-    return 0
+    return sum(1 for _ in _iter_tool_blocks(value))
 
 
 def _parse_file(sf: SessionFile) -> tuple[Optional[Session], int, int]:
     turns: list[Turn] = []
     bad_lines = 0
     tool_calls = 0
+    recorded: list[ToolCall] = []
     session_id: Optional[str] = None
     project: Optional[str] = None
     model_hint: Optional[str] = None
@@ -214,7 +256,9 @@ def _parse_file(sf: SessionFile) -> tuple[Optional[Session], int, int]:
                 bad_lines += 1
                 continue
 
-            tool_calls += _count_tool_calls(obj)
+            extracted = _extract_tool_calls(obj)
+            recorded.extend(extracted)
+            tool_calls += len(extracted)
 
             if session_id is None:
                 sid = first_present(
@@ -271,6 +315,7 @@ def _parse_file(sf: SessionFile) -> tuple[Optional[Session], int, int]:
             ended_at=ended,
             turns=turns,
             parse_status=status,
+            tool_calls=recorded,
         ),
         bad_lines,
         tool_calls,
