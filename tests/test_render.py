@@ -47,6 +47,7 @@ def _cand(**kwargs) -> Candidate:
         input_tokens=8000,
         output_tokens=2500,
         cache_read_tokens=1500,
+        priced=kwargs.get("priced", kwargs.get("cost_basis", "measured") == "measured"),
     )
 
 
@@ -181,6 +182,7 @@ class RenderTextTests(unittest.TestCase):
                     basis="estimated",
                     run_count=40,
                     input_tokens=12_000,
+                    priced=False,
                 ),
                 ProjectView(
                     project="Lading",
@@ -189,6 +191,7 @@ class RenderTextTests(unittest.TestCase):
                     basis="estimated",
                     run_count=20,
                     input_tokens=8_000,
+                    priced=False,
                 ),
             ],
         )
@@ -196,8 +199,8 @@ class RenderTextTests(unittest.TestCase):
         self.assertIn("WHERE YOUR TOKENS WENT", text)
         self.assertIn("GASKET", text)
         self.assertIn("Lading", text)
-        self.assertIn("$0.42", text)
-        self.assertIn("estimated", text)
+        self.assertNotIn("$0.42", text)
+        self.assertNotIn("$0.21", text)
         self.assertNotIn("(no project totals in this window)", text)
 
     def test_nothing_skipped_when_clean(self) -> None:
@@ -212,6 +215,38 @@ class RenderTextTests(unittest.TestCase):
         )
         text = render_text(report)
         self.assertIn("nothing skipped", text)
+
+    def test_unpriced_candidate_omits_dollar_column(self) -> None:
+        report = build_report(
+            days=14,
+            min_runs=3,
+            top=3,
+            session_count=5,
+            harness_statuses={"cursor": "found"},
+            rank_result=RankResult(
+                candidates=[_cand(cost_basis="estimated", priced=False, usd=0.79)]
+            ),
+            skipped=[],
+            sessions_without_model=5,
+        )
+        text = render_text(report)
+        self.assertIn("tokens", text)
+        self.assertNotIn("$0.79", text)
+        self.assertIn("5 sessions had no model id and therefore no cost", text)
+
+    def test_priced_candidate_prints_dollars(self) -> None:
+        report = build_report(
+            days=14,
+            min_runs=3,
+            top=3,
+            session_count=5,
+            harness_statuses={"claude_code": "found"},
+            rank_result=RankResult(candidates=[_cand(priced=True, usd=0.32)]),
+            skipped=[],
+        )
+        text = render_text(report)
+        self.assertIn("$0.32", text)
+        self.assertIn("from your logs", text)
 
 
 class RenderJsonTests(unittest.TestCase):

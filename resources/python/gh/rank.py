@@ -44,6 +44,7 @@ class Candidate:
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
+    priced: bool = False
 
 
 @dataclass
@@ -142,6 +143,7 @@ def score_candidates(
                 input_tokens=cost.input_tokens,
                 output_tokens=cost.output_tokens,
                 cache_read_tokens=cost.cache_read_tokens,
+                priced=cost.priced,
             )
         )
 

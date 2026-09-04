@@ -55,6 +55,7 @@ def main(argv: list[str]) -> int:
             "truncated": payload.get("truncated") or False,
             "files_read": payload.get("files_read") or 0,
             "files_total": payload.get("files_total") or 0,
+            "tool_calls": payload.get("tool_calls") or 0,
             "session_count": len(payload.get("sessions") or []),
         },
         "intents": [

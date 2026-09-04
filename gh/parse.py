@@ -99,6 +99,7 @@ class ParseResult:
     truncated: bool = False
     files_read: int = 0
     files_total: int = 0
+    tool_calls: int = 0
 
 
 def first_present(obj: Any, candidates: Iterable[str]) -> Any:
@@ -157,7 +158,7 @@ def parse_sessions(
             break
         result.files_read += 1
         try:
-            session, bad_lines = _parse_file(sf)
+            session, bad_lines, tool_calls = _parse_file(sf)
         except OSError as exc:
             result.skipped.append((sf.path, f"unreadable: {exc}"))
             continue
@@ -166,6 +167,7 @@ def parse_sessions(
             continue
 
         result.malformed_lines += bad_lines
+        result.tool_calls += tool_calls
         if session is None:
             result.skipped.append((sf.path, "no usable turns"))
             continue
@@ -173,9 +175,27 @@ def parse_sessions(
     return result
 
 
-def _parse_file(sf: SessionFile) -> tuple[Optional[Session], int]:
+def _count_tool_calls(obj: dict) -> int:
+    """Count tool_use / function_call blocks in one JSONL record."""
+    return _count_tool_blocks(obj)
+
+
+def _count_tool_blocks(value: Any) -> int:
+    if isinstance(value, dict):
+        n = 1 if value.get("type") in ("tool_use", "function_call", "tool_call") else 0
+        for inner in value.values():
+            if isinstance(inner, (dict, list)):
+                n += _count_tool_blocks(inner)
+        return n
+    if isinstance(value, list):
+        return sum(_count_tool_blocks(item) for item in value)
+    return 0
+
+
+def _parse_file(sf: SessionFile) -> tuple[Optional[Session], int, int]:
     turns: list[Turn] = []
     bad_lines = 0
+    tool_calls = 0
     session_id: Optional[str] = None
     project: Optional[str] = None
     model_hint: Optional[str] = None
@@ -193,6 +213,8 @@ def _parse_file(sf: SessionFile) -> tuple[Optional[Session], int]:
             if not isinstance(obj, dict):
                 bad_lines += 1
                 continue
+
+            tool_calls += _count_tool_calls(obj)
 
             if session_id is None:
                 sid = first_present(
@@ -230,7 +252,7 @@ def _parse_file(sf: SessionFile) -> tuple[Optional[Session], int]:
             turns.append(turn)
 
     if not turns:
-        return None, bad_lines
+        return None, bad_lines, tool_calls
 
     timestamps = [t.timestamp for t in turns if t.timestamp]
     started = timestamps[0] if timestamps else None
@@ -251,6 +273,7 @@ def _parse_file(sf: SessionFile) -> tuple[Optional[Session], int]:
             parse_status=status,
         ),
         bad_lines,
+        tool_calls,
     )
 
 

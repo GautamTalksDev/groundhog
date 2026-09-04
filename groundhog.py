@@ -18,7 +18,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from gh.cluster import Cluster, cluster_intents
-from gh.cost import cost_for_cluster, load_prices, project_costs_from_sessions
+from gh.cost import (
+    cost_for_cluster,
+    count_sessions_with_tokens,
+    count_sessions_without_model,
+    date_range_for_sessions,
+    load_prices,
+    project_costs_from_sessions,
+)
 from gh.discover import (
     DiscoveryResult,
     checked_locations,
@@ -378,6 +385,12 @@ def run_pipeline(args: argparse.Namespace) -> PipelineResult:
             files_read=parsed.files_read,
             files_total=parsed.files_total or len(discovery.files),
             session_projects=session_projects or None,
+            tool_calls=parsed.tool_calls,
+            sessions_with_tokens=count_sessions_with_tokens(parsed.sessions),
+            sessions_without_model=count_sessions_without_model(
+                parsed.sessions
+            ),
+            date_range=date_range_for_sessions(parsed.sessions),
         ),
         notes,
         _fallback_report(

@@ -79,6 +79,7 @@ def main(argv: list[str]) -> int:
         "truncated": parsed.truncated,
         "files_read": parsed.files_read,
         "files_total": parsed.files_total,
+        "tool_calls": parsed.tool_calls,
     }
     write_artifact(out_path, payload)
     emit(payload)

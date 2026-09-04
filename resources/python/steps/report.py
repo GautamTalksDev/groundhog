@@ -9,7 +9,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _common import emit  # noqa: E402
 from step_io import load_json_arg, write_artifact  # noqa: E402
-from gh.cost import load_prices, project_costs_from_sessions  # noqa: E402
+from gh.cost import (  # noqa: E402
+    count_sessions_with_tokens,
+    count_sessions_without_model,
+    date_range_for_sessions,
+    load_prices,
+    project_costs_from_sessions,
+)
 from gh.discover import checked_locations  # noqa: E402
 from gh.parse import Session, Turn  # noqa: E402
 from gh.rank import Candidate, EvidenceItem, RankResult  # noqa: E402
@@ -69,14 +75,17 @@ def main(argv: list[str]) -> int:
                 input_tokens=int(c.get("input_tokens") or 0),
                 output_tokens=int(c.get("output_tokens") or 0),
                 cache_read_tokens=int(c.get("cache_read_tokens") or 0),
+                priced=bool(c.get("priced")),
             )
         )
 
     session_projects = []
-    if not candidates and parse_path:
+    sessions = []
+    parse_payload: dict = {}
+    if parse_path:
         parse_payload = load_json_arg(parse_path)
         sessions = _hydrate_sessions(parse_payload)
-        if sessions:
+        if not candidates and sessions:
             prices = load_prices(
                 Path(__file__).resolve().parent.parent / "prices.json"
             )
@@ -96,9 +105,25 @@ def main(argv: list[str]) -> int:
         locations_checked=checked_locations(),
         redact=redact,
         time_truncated=bool(meta.get("truncated")),
-        files_read=int(meta.get("files_read") or 0),
-        files_total=int(meta.get("files_total") or 0),
+        files_read=int(
+            meta.get("files_read")
+            or parse_payload.get("files_read")
+            or 0
+        ),
+        files_total=int(
+            meta.get("files_total")
+            or parse_payload.get("files_total")
+            or 0
+        ),
         session_projects=session_projects or None,
+        tool_calls=int(
+            meta.get("tool_calls")
+            or parse_payload.get("tool_calls")
+            or 0
+        ),
+        sessions_with_tokens=count_sessions_with_tokens(sessions),
+        sessions_without_model=count_sessions_without_model(sessions),
+        date_range=date_range_for_sessions(sessions),
     )
     out = {"text": render_text(report), "json": json.loads(render_json(report))}
     write_artifact(out_path, out)

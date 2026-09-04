@@ -77,6 +77,7 @@ class CostBasisTests(unittest.TestCase):
         self.assertEqual(cost.price_model, "claude-sonnet-4")
         # $3 / MTok input for sonnet-4 in prices.json
         self.assertAlmostEqual(cost.usd, 3.0, places=4)
+        self.assertTrue(cost.priced)
 
     def test_estimated(self) -> None:
         # 400 chars → 100 tokens at 4 chars/token; no measured usage.
@@ -92,6 +93,20 @@ class CostBasisTests(unittest.TestCase):
         self.assertEqual(cost.basis, "estimated")
         self.assertEqual(cost.input_tokens, 100)
         self.assertEqual(cost.output_tokens, 0)
+        self.assertGreater(cost.usd, 0.0)
+        self.assertFalse(cost.priced)
+
+    def test_no_model_id_is_not_priced(self) -> None:
+        intent = _intent(
+            session_input_tokens=1_000_000,
+            session_output_tokens=0,
+            session_cache_read_tokens=0,
+            session_model=None,
+            session_tokens=1_000_000,
+        )
+        cost = cost_for_cluster(_cluster([intent]), PRICES)
+        self.assertEqual(cost.basis, "measured")
+        self.assertFalse(cost.priced)
         self.assertGreater(cost.usd, 0.0)
 
     def test_unknown(self) -> None:

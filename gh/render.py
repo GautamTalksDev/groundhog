@@ -23,6 +23,12 @@ _BASIS_LABELS = {
     "unknown": "unknown",
 }
 
+VERDICT_REPEATED = "REPEATED WORK FOUND"
+VERDICT_NULL = "DEFENSIBLE NULL"
+VERDICT_PARTIAL = "PARTIAL SCAN — NOT A CLEAN RESULT"
+VERDICT_INSUFFICIENT = "INSUFFICIENT HISTORY"
+VERDICT_NO_HISTORY = "NO SUPPORTED HISTORY FOUND"
+
 
 @dataclass
 class EvidenceView:
@@ -57,6 +63,7 @@ class CandidateView:
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
+    priced: bool = False
 
 
 @dataclass
@@ -70,6 +77,23 @@ class ProjectView:
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
+    priced: bool = False
+
+
+@dataclass
+class Coverage:
+    """What the scan actually touched — shown under the verdict."""
+
+    directories_checked: int = 0
+    agents_detected: list[str] = field(default_factory=list)
+    files_discovered: int = 0
+    files_parsed: int = 0
+    files_skipped: int = 0
+    sessions_analyzed: int = 0
+    tool_calls_analyzed: int = 0
+    date_range: str = "none"
+    sessions_with_tokens: int = 0
+    threshold: int = 0
 
 
 @dataclass
@@ -92,6 +116,9 @@ class Report:
     locations_checked: list[str] = field(default_factory=list)
     zero_sessions: bool = False
     redacted: bool = True
+    verdict: str = VERDICT_NO_HISTORY
+    coverage: Coverage = field(default_factory=Coverage)
+    sessions_without_model: int = 0
 
 
 def build_report(
@@ -111,6 +138,10 @@ def build_report(
     files_read: int = 0,
     files_total: int = 0,
     session_projects: list[ProjectView] | None = None,
+    tool_calls: int = 0,
+    sessions_with_tokens: int = 0,
+    sessions_without_model: int = 0,
+    date_range: str = "none",
 ) -> Report:
     """Assemble the shared report model from pipeline outputs."""
     from gh.redact import EVIDENCE_LIMIT, redact_text
@@ -147,6 +178,34 @@ def build_report(
         files_read=files_read,
         files_total=files_total,
         session_projects=projects if not shown else None,
+        sessions_without_model=sessions_without_model,
+    )
+
+    real_skipped = _real_skipped(skipped)
+    unread = max(0, files_total - files_read) if time_truncated else 0
+    files_skipped = len(real_skipped) + unread
+    files_parsed = max(0, files_read - len(real_skipped))
+    coverage = Coverage(
+        directories_checked=len(locations_checked or []),
+        agents_detected=found,
+        files_discovered=files_total,
+        files_parsed=files_parsed,
+        files_skipped=files_skipped,
+        sessions_analyzed=session_count,
+        tool_calls_analyzed=tool_calls,
+        date_range=date_range or "none",
+        sessions_with_tokens=sessions_with_tokens,
+        threshold=min_runs,
+    )
+    verdict = classify_verdict(
+        harness_statuses=harness_statuses,
+        session_count=session_count,
+        min_runs=min_runs,
+        candidate_count=len(all_candidates),
+        skipped=skipped,
+        malformed_lines=malformed_lines,
+        time_truncated=time_truncated,
+        extra_notes=extra_not_counted or [],
     )
 
     return Report(
@@ -165,7 +224,98 @@ def build_report(
         locations_checked=list(locations_checked or []),
         zero_sessions=session_count == 0,
         redacted=redact,
+        verdict=verdict,
+        coverage=coverage,
+        sessions_without_model=sessions_without_model,
     )
+
+
+def classify_verdict(
+    *,
+    harness_statuses: dict[str, str],
+    session_count: int,
+    min_runs: int,
+    candidate_count: int,
+    skipped: list[tuple[str, str]],
+    malformed_lines: int,
+    time_truncated: bool,
+    extra_notes: list[str] | None = None,
+) -> str:
+    """Pick the honest scan class. Partial never renders as a null."""
+    statuses = list(harness_statuses.values()) if harness_statuses else []
+    if statuses and all(status == "absent" for status in statuses):
+        return VERDICT_NO_HISTORY
+    if not statuses:
+        return VERDICT_NO_HISTORY
+    if _is_partial(
+        harness_statuses=harness_statuses,
+        skipped=skipped,
+        malformed_lines=malformed_lines,
+        time_truncated=time_truncated,
+        extra_notes=extra_notes or [],
+    ):
+        return VERDICT_PARTIAL
+    if session_count < min_runs:
+        return VERDICT_INSUFFICIENT
+    if candidate_count > 0:
+        return VERDICT_REPEATED
+    return VERDICT_NULL
+
+
+def _is_partial(
+    *,
+    harness_statuses: dict[str, str],
+    skipped: list[tuple[str, str]],
+    malformed_lines: int,
+    time_truncated: bool,
+    extra_notes: list[str],
+) -> bool:
+    for status in harness_statuses.values():
+        if str(status).startswith("unreadable"):
+            return True
+    if _real_skipped(skipped):
+        return True
+    if malformed_lines > 0:
+        return True
+    if time_truncated:
+        return True
+    for note in extra_notes:
+        if note and "failed" in note.lower():
+            return True
+    return False
+
+
+def _real_skipped(skipped: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    return [
+        (path, reason)
+        for path, reason in skipped
+        if path != "(remaining files)" and "time budget hit" not in reason
+    ]
+
+
+def _coverage_lines(coverage: Coverage) -> list[str]:
+    agents = ", ".join(coverage.agents_detected) or "none"
+    rows = [
+        ("directories checked", str(coverage.directories_checked)),
+        ("agents detected", agents),
+        ("files discovered", str(coverage.files_discovered)),
+        ("files parsed", str(coverage.files_parsed)),
+        ("files skipped", str(coverage.files_skipped)),
+        ("sessions analyzed", str(coverage.sessions_analyzed)),
+        ("tool calls analyzed", f"{coverage.tool_calls_analyzed:,}"),
+        ("date range covered", coverage.date_range),
+        ("sessions with token counts", str(coverage.sessions_with_tokens)),
+        (
+            "threshold used",
+            f"{coverage.threshold} distinct session"
+            f"{'s' if coverage.threshold != 1 else ''}",
+        ),
+    ]
+    width = max(len(label) for label, _ in rows)
+    lines = ["COVERAGE"]
+    for label, value in rows:
+        lines.append(f"  {label.ljust(width)}  {value}")
+    return lines
 
 
 def render_text(report: Report) -> str:
@@ -181,8 +331,12 @@ def render_text(report: Report) -> str:
         f"GROUNDHOG · {report.session_count} sessions · "
         f"last {report.days} days · {harnesses}",
         "",
-        "YOU KEEP REDOING THIS",
+        report.verdict,
+        "",
     ]
+    lines.extend(_coverage_lines(report.coverage))
+    lines.append("")
+    lines.append("YOU KEEP REDOING THIS")
 
     if report.zero_sessions:
         lines.append(
@@ -203,10 +357,12 @@ def render_text(report: Report) -> str:
                 f"   {_format_timespan(cand.distinct_sessions, cand.first_seen, cand.last_seen)}"
                 f" · {projects}"
             )
-            lines.append(
-                f"   ~{_fmt_tokens(cand.tokens)} tokens · "
-                f"~${cand.usd:.2f} ({_basis_label(cand.basis)})"
-            )
+            token_line = f"   ~{_fmt_tokens(cand.tokens)} tokens"
+            if cand.priced:
+                token_line += (
+                    f" · ~${cand.usd:.2f} ({_basis_label(cand.basis)})"
+                )
+            lines.append(token_line)
             lines.append(f"   {cand.stability_sentence}")
             if cand.evidence:
                 lines.append("   Seen as:")
@@ -222,11 +378,13 @@ def render_text(report: Report) -> str:
             len(_fmt_tokens(p.tokens)) for p in report.projects
         )
         for proj in report.projects:
-            lines.append(
+            row = (
                 f"  {proj.project.ljust(name_width)}   "
-                f"{_fmt_tokens(proj.tokens).rjust(token_width)}   "
-                f"${proj.usd:.2f}   {_basis_label(proj.basis)}"
+                f"{_fmt_tokens(proj.tokens).rjust(token_width)}"
             )
+            if proj.priced:
+                row += f"   ${proj.usd:.2f}   {_basis_label(proj.basis)}"
+            lines.append(row)
     else:
         lines.append("  (no project totals in this window)")
 
@@ -267,9 +425,9 @@ def render_json(report: Report) -> str:
                 "last_seen": c.last_seen,
                 "projects": c.projects,
                 "tokens": c.tokens,
-                "usd": round(c.usd, 6),
+                "usd": round(c.usd, 6) if c.priced else None,
+                "priced": c.priced,
                 "basis": c.basis,
-                "stability_sentence": c.stability_sentence,
                 "evidence": [asdict(ev) for ev in c.evidence],
                 "cluster_id": c.cluster_id,
                 "score": c.score,
@@ -293,7 +451,8 @@ def render_json(report: Report) -> str:
             {
                 "project": p.project,
                 "tokens": p.tokens,
-                "usd": round(p.usd, 6),
+                "usd": round(p.usd, 6) if p.priced else None,
+                "priced": p.priced,
                 "basis": p.basis,
                 "run_count": p.run_count,
                 "candidates": p.candidates,
@@ -311,6 +470,19 @@ def render_json(report: Report) -> str:
         "zero_sessions": report.zero_sessions,
         "locations_checked": report.locations_checked,
         "redacted": report.redacted,
+        "verdict": report.verdict,
+        "coverage": {
+            "directories_checked": report.coverage.directories_checked,
+            "agents_detected": report.coverage.agents_detected,
+            "files_discovered": report.coverage.files_discovered,
+            "files_parsed": report.coverage.files_parsed,
+            "files_skipped": report.coverage.files_skipped,
+            "sessions_analyzed": report.coverage.sessions_analyzed,
+            "tool_calls_analyzed": report.coverage.tool_calls_analyzed,
+            "date_range": report.coverage.date_range,
+            "sessions_with_tokens": report.coverage.sessions_with_tokens,
+            "threshold": report.coverage.threshold,
+        },
     }
     text = json.dumps(payload, indent=2) + "\n"
     if report.redacted:
@@ -378,6 +550,7 @@ def _candidate_view(
         input_tokens=cand.input_tokens,
         output_tokens=cand.output_tokens,
         cache_read_tokens=cand.cache_read_tokens,
+        priced=cand.priced,
     )
 
 
@@ -385,6 +558,7 @@ def _projects_from_candidates(candidates: list[Candidate]) -> list[ProjectView]:
     """Roll up tokens/usd for projects touched by the shown candidates."""
     by_project: dict[str, ProjectView] = {}
     bases: dict[str, set[str]] = {}
+    priced_flags: dict[str, list[bool]] = {}
     for cand in candidates:
         projects = sorted(cand.projects) or ["unknown"]
         for project in projects:
@@ -406,8 +580,11 @@ def _projects_from_candidates(candidates: list[Candidate]) -> list[ProjectView]:
                 + view.cache_read_tokens
             )
             bases.setdefault(project, set()).add(cand.cost_basis)
+            priced_flags.setdefault(project, []).append(cand.priced)
     for project, view in by_project.items():
         view.basis = _rollup_basis(bases.get(project, set()))
+        flags = priced_flags.get(project, [])
+        view.priced = bool(flags) and all(flags)
     return sorted(
         by_project.values(),
         key=lambda p: (-p.usd, -p.tokens, p.project.lower()),
@@ -429,6 +606,7 @@ def projects_from_session_costs(costs: list[ProjectCost]) -> list[ProjectView]:
                 input_tokens=cost.input_tokens,
                 output_tokens=cost.output_tokens,
                 cache_read_tokens=cost.cache_read_tokens,
+                priced=cost.priced,
             )
         )
     return sorted(
@@ -451,6 +629,7 @@ def _not_counted_lines(
     files_read: int = 0,
     files_total: int = 0,
     session_projects: list[ProjectView] | None = None,
+    sessions_without_model: int = 0,
 ) -> list[str]:
     items: list[str] = []
 
@@ -489,16 +668,6 @@ def _not_counted_lines(
             f"{f'; {unread} unread' if unread else ''})"
         )
 
-    estimated = [c for c in candidates_shown if c.cost_basis == "estimated"]
-    if not estimated and session_projects:
-        estimated = [p for p in session_projects if p.basis == "estimated"]
-    if estimated:
-        items.append(
-            f"{len(estimated)} cost figure"
-            f"{'s' if len(estimated) != 1 else ''} estimated "
-            "(token counts were missing from the file)"
-        )
-
     unknown = [c for c in candidates_shown if c.cost_basis == "unknown"]
     if not unknown and session_projects:
         unknown = [p for p in session_projects if p.basis == "unknown"]
@@ -507,6 +676,13 @@ def _not_counted_lines(
             f"{len(unknown)} cost figure"
             f"{'s' if len(unknown) != 1 else ''} unknown "
             "(no tokens and no text to estimate from)"
+        )
+
+    if sessions_without_model:
+        items.append(
+            f"{sessions_without_model} session"
+            f"{'s' if sessions_without_model != 1 else ''} had no model id "
+            "and therefore no cost"
         )
 
     hidden = max(0, len(all_candidates) - shown_count)

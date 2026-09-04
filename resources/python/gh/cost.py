@@ -28,6 +28,9 @@ class CostBreakdown:
     usd: float
     basis: str  # measured | estimated | unknown
     price_model: str = "default"  # longest-prefix key used (or default)
+    # True only when a model id was read AND token counts were measured.
+    # Ranking may still see usd; rendering must not print $ unless priced.
+    priced: bool = False
 
 
 @dataclass
@@ -41,6 +44,8 @@ class ProjectCost:
     usd: float = 0.0
     basis: str = "unknown"
     session_count: int = 0
+    priced: bool = False
+    sessions_without_model: int = 0
 
     @property
     def tokens(self) -> int:
@@ -108,10 +113,11 @@ def cost_for_cluster(
     usd = 0.0
     basis = "measured"
     price_models: list[str] = []
+    priced_flags: list[bool] = []
 
     members = list(cluster.members) if cluster else []
     if not members:
-        return CostBreakdown(0, 0, 0, 0.0, "unknown", "default")
+        return CostBreakdown(0, 0, 0, 0.0, "unknown", "default", False)
 
     for member in members:
         sid = member.session_id or id(member)
@@ -125,6 +131,7 @@ def cost_for_cluster(
         usd += part.usd
         basis = _worse_basis(basis, part.basis)
         price_models.append(part.price_model)
+        priced_flags.append(part.priced)
 
     price_model = (
         "default"
@@ -138,6 +145,7 @@ def cost_for_cluster(
         usd=round(usd, 6),
         basis=basis,
         price_model=price_model,
+        priced=bool(priced_flags) and all(priced_flags),
     )
 
 
@@ -151,15 +159,23 @@ def project_costs_from_sessions(
         part = cost_for_session(session, prices)
         roll = buckets.get(name)
         if roll is None:
-            roll = ProjectCost(project=name, basis=part.basis)
+            roll = ProjectCost(
+                project=name,
+                basis=part.basis,
+                priced=part.priced,
+            )
             buckets[name] = roll
         else:
             roll.basis = _worse_basis(roll.basis, part.basis)
+            roll.priced = roll.priced and part.priced
         roll.input_tokens += part.input_tokens
         roll.output_tokens += part.output_tokens
         roll.cache_read_tokens += part.cache_read_tokens
         roll.usd += part.usd
         roll.session_count += 1
+        has_model, _has_tokens = session_pricing_status(session)
+        if not has_model:
+            roll.sessions_without_model += 1
     for roll in buckets.values():
         roll.usd = round(roll.usd, 6)
     return sorted(
@@ -187,6 +203,44 @@ def cost_for_session(session: Session, prices: dict[str, Any]) -> CostBreakdown:
         session_text_chars=usage["text_chars"],
     )
     return _cost_for_intent(intent, prices)
+
+
+def session_pricing_status(session: Session) -> tuple[bool, bool]:
+    """Return (has_model_id, has_measured_tokens) from the file itself."""
+    usage = _usage_from_session(session)
+    has_model = bool(usage.get("model") and str(usage["model"]).strip())
+    has_tokens = usage.get("session_tokens") is not None
+    return has_model, has_tokens
+
+
+def count_sessions_without_model(sessions: list[Session]) -> int:
+    """Sessions where no model id was present in the file."""
+    return sum(1 for s in sessions if not session_pricing_status(s)[0])
+
+
+def count_sessions_with_tokens(sessions: list[Session]) -> int:
+    """Sessions where token counts were actually read from the file."""
+    return sum(1 for s in sessions if session_pricing_status(s)[1])
+
+
+def date_range_for_sessions(sessions: list[Session]) -> str:
+    """YYYY-MM-DD or ``start → end`` across parsed sessions; ``none`` if empty."""
+    dates: list[str] = []
+    for session in sessions:
+        for raw in (session.started_at, session.ended_at):
+            if not raw:
+                continue
+            text = str(raw).strip()
+            if "T" in text:
+                text = text.split("T", 1)[0]
+            elif len(text) >= 10 and text[4] == "-" and text[7] == "-":
+                text = text[:10]
+            if text:
+                dates.append(text)
+    if not dates:
+        return "none"
+    first, last = min(dates), max(dates)
+    return first if first == last else f"{first} → {last}"
 
 
 def cost_breakdown_dict(cost: CostBreakdown) -> dict[str, Any]:
@@ -219,10 +273,16 @@ def _cost_for_intent(intent: Intent, prices: dict[str, Any]) -> CostBreakdown:
             inp, out, cache = est, 0, 0
             basis = "estimated"
         else:
-            return CostBreakdown(0, 0, 0, 0.0, "unknown", price_key)
+            return CostBreakdown(0, 0, 0, 0.0, "unknown", price_key, False)
 
     usd = _usd(inp, out, cache, rates)
-    return CostBreakdown(inp, out, cache, round(usd, 6), basis, price_key)
+    has_model = bool(
+        intent.session_model and str(intent.session_model).strip()
+    )
+    priced = has_model and has_any_measured
+    return CostBreakdown(
+        inp, out, cache, round(usd, 6), basis, price_key, priced
+    )
 
 
 def _usd(

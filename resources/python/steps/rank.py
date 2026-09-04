@@ -61,6 +61,7 @@ def main(argv: list[str]) -> int:
                 usd=float(c.get("usd") or 0),
                 basis=c.get("basis") or "unknown",
                 price_model=c.get("price_model") or "default",
+                priced=bool(c.get("priced")),
             )
         )
     ranked = score_candidates(clusters, costs)
@@ -86,6 +87,7 @@ def main(argv: list[str]) -> int:
                 "input_tokens": cand.input_tokens,
                 "output_tokens": cand.output_tokens,
                 "cache_read_tokens": cand.cache_read_tokens,
+                "priced": cand.priced,
                 "evidence": [
                     {
                         "raw_text": ev.raw_text,
