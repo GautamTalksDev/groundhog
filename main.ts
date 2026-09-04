@@ -12,7 +12,7 @@
  *   author: groundhog
  * metadata:
  *   rote_version: 0.79.0
- *   version: 0.1.0
+ *   version: 0.1.1
  *   status: released
  *   kind: atomic
  *   flow_type: sequential

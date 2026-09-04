@@ -8,7 +8,11 @@ from typing import Any, Optional
 
 from gh import SCHEMA_VERSION
 from gh.cost import ProjectCost
-from gh.discover import SKIP_SYMLINK_OUTSIDE
+from gh.discover import (
+    SKIP_SYMLINK_OUTSIDE,
+    SKIP_UNREADABLE_DIR,
+    is_unreadable_dir_reason,
+)
 from gh.rank import Candidate, RankResult
 from gh.context_rediscovery import RediscoveryReport
 
@@ -192,10 +196,16 @@ def build_report(
     symlink_skips = [
         item for item in real_skipped if item[1] == SKIP_SYMLINK_OUTSIDE
     ]
-    opened_skips = [
-        item for item in real_skipped if item[1] != SKIP_SYMLINK_OUTSIDE
+    dir_skips = [
+        item for item in real_skipped if is_unreadable_dir_reason(item[1])
     ]
-    files_skipped = len(real_skipped) + unread
+    opened_skips = [
+        item
+        for item in real_skipped
+        if item[1] != SKIP_SYMLINK_OUTSIDE
+        and not is_unreadable_dir_reason(item[1])
+    ]
+    files_skipped = len(real_skipped) - len(dir_skips) + unread
     files_parsed = max(0, files_read - len(opened_skips))
     coverage = Coverage(
         directories_checked=len(locations_checked or []),
@@ -792,14 +802,29 @@ def _not_counted_lines(
         if p != "(remaining files)" and "time budget hit" not in r
     ]
     symlink_n = sum(1 for _, r in real_skipped if r == SKIP_SYMLINK_OUTSIDE)
+    dir_skips = [
+        (p, r) for p, r in real_skipped if is_unreadable_dir_reason(r)
+    ]
     other_skipped = [
-        (p, r) for p, r in real_skipped if r != SKIP_SYMLINK_OUTSIDE
+        (p, r)
+        for p, r in real_skipped
+        if r != SKIP_SYMLINK_OUTSIDE and not is_unreadable_dir_reason(r)
     ]
     if symlink_n:
         items.append(
             f"{symlink_n} file{'s' if symlink_n != 1 else ''} skipped "
             f"({SKIP_SYMLINK_OUTSIDE})"
         )
+    if dir_skips:
+        n = len(dir_skips)
+        noun = "directory" if n == 1 else "directories"
+        if n == 1:
+            path, reason = dir_skips[0]
+            items.append(f"1 {noun} skipped ({reason}): {path}")
+        else:
+            items.append(f"{n} {noun} skipped ({SKIP_UNREADABLE_DIR})")
+            for path, reason in dir_skips:
+                items.append(f"{path} ({reason})")
     if other_skipped:
         if len(other_skipped) == 1:
             _path, reason = other_skipped[0]

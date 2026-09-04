@@ -197,6 +197,55 @@ class E2ETests(unittest.TestCase):
         self.assertNotIn(str(outside), text)
         self.assertNotIn("UNIQUE_SYMLINK_SECRET", text)
 
+    def test_unreadable_subdirectory_forces_partial_and_is_named(self) -> None:
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("root can read chmod 000 directories")
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            home = tmp_path / "home"
+            transcripts = (
+                home
+                / ".cursor"
+                / "projects"
+                / "home-x-projects-Walk"
+                / "agent-transcripts"
+            )
+            transcripts.mkdir(parents=True)
+            (transcripts / "ok.jsonl").write_text(
+                json.dumps(
+                    {
+                        "type": "user",
+                        "sessionId": "walk-ok",
+                        "cwd": "/tmp/walk",
+                        "timestamp": "2026-09-01T12:00:00Z",
+                        "message": {"role": "user", "content": "hello"},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            locked = transcripts / "quietcheck-locked-subdir"
+            locked.mkdir()
+            (locked / "hidden.jsonl").write_text("{}\n", encoding="utf-8")
+            os.chmod(locked, 0o000)
+            out = tmp_path / "report.txt"
+            try:
+                try:
+                    os.listdir(locked)
+                except OSError:
+                    pass
+                else:
+                    self.skipTest("filesystem still lists chmod 000 directories")
+                with mock.patch.dict(os.environ, {"HOME": str(home)}):
+                    code = main(["--days", "3650", "--out", str(out)])
+            finally:
+                os.chmod(locked, 0o755)
+            self.assertEqual(code, 0)
+            text = out.read_text(encoding="utf-8")
+        self.assertIn("PARTIAL SCAN", text)
+        self.assertIn("quietcheck-locked-subdir", text)
+        self.assertIn("directory skipped", text)
+
 
 if __name__ == "__main__":
     unittest.main()

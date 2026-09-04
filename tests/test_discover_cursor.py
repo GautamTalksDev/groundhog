@@ -6,7 +6,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from gh.discover import SKIP_SYMLINK_OUTSIDE, cursor_project_name, discover_harness
+import os
+
+from gh.discover import (
+    SKIP_SYMLINK_OUTSIDE,
+    SKIP_UNREADABLE_DIR,
+    cursor_project_name,
+    discover_harness,
+)
 
 
 FIXTURE_HOME = Path(__file__).resolve().parent / "fixtures" / "cursor_home"
@@ -108,6 +115,46 @@ class CursorDiscoverTests(unittest.TestCase):
         names = {Path(f.path).name for f in result.files}
         self.assertEqual(names, {"real.jsonl", "alias.jsonl"})
         self.assertEqual(result.skipped, [])
+
+    def test_unreadable_subdirectory_is_counted(self) -> None:
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("root can read chmod 000 directories")
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            home = tmp_path / "home"
+            transcripts = (
+                home
+                / ".cursor"
+                / "projects"
+                / "home-x-projects-Walk"
+                / "agent-transcripts"
+            )
+            transcripts.mkdir(parents=True)
+            (transcripts / "ok.jsonl").write_text(
+                '{"role":"user","message":{"content":"ok"}}\n'
+            )
+            locked = transcripts / "quietcheck-locked-subdir"
+            locked.mkdir()
+            (locked / "hidden.jsonl").write_text(
+                '{"role":"user","message":{"content":"hidden"}}\n'
+            )
+            os.chmod(locked, 0o000)
+            try:
+                try:
+                    os.listdir(locked)
+                except OSError:
+                    pass
+                else:
+                    self.skipTest("filesystem still lists chmod 000 directories")
+                result = discover_harness("cursor", days=36500, home=home)
+            finally:
+                os.chmod(locked, 0o755)
+        self.assertEqual(len(result.files), 1)
+        self.assertEqual(Path(result.files[0].path).name, "ok.jsonl")
+        self.assertEqual(len(result.skipped), 1)
+        path, reason = result.skipped[0]
+        self.assertTrue(path.endswith("quietcheck-locked-subdir"))
+        self.assertTrue(reason.startswith(SKIP_UNREADABLE_DIR))
 
 
 if __name__ == "__main__":

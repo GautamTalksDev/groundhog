@@ -19,8 +19,15 @@ class SessionFile:
     project: str = ""
 
 
-# Reason string rendered in NOT COUNTED. Keep in sync with gh.render.
+# Reason strings rendered in NOT COUNTED. Keep in sync with gh.render.
 SKIP_SYMLINK_OUTSIDE = "symlink points outside the history directory"
+SKIP_UNREADABLE_DIR = "unreadable directory"
+
+
+def is_unreadable_dir_reason(reason: str) -> bool:
+    return reason == SKIP_UNREADABLE_DIR or reason.startswith(
+        SKIP_UNREADABLE_DIR + ":"
+    )
 
 
 @dataclass
@@ -149,7 +156,11 @@ def _scan_cursor_projects(
             try:
                 if not project_dir.is_dir():
                     continue
-            except OSError:
+            except OSError as exc:
+                detail = getattr(exc, "strerror", None) or type(exc).__name__
+                skipped.append(
+                    (str(project_dir), f"{SKIP_UNREADABLE_DIR}: {detail}")
+                )
                 continue
             transcripts = project_dir / "agent-transcripts"
             _status, found, refused = _scan_root(transcripts, "cursor", cutoff)
@@ -210,8 +221,16 @@ def _scan_root(
 
     files: list[SessionFile] = []
     skipped: list[tuple[str, str]] = []
+
+    def _on_walk_error(err: OSError) -> None:
+        path = getattr(err, "filename", None) or str(err)
+        detail = getattr(err, "strerror", None) or type(err).__name__
+        skipped.append((str(path), f"{SKIP_UNREADABLE_DIR}: {detail}"))
+
     try:
-        for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+        for dirpath, _dirnames, filenames in os.walk(
+            root, followlinks=False, onerror=_on_walk_error
+        ):
             for name in filenames:
                 if not name.endswith(".jsonl"):
                     continue

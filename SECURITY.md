@@ -38,7 +38,7 @@ JSONL lines are `json.loads`'d. Transcript strings are never `eval`'d and never 
 
 Input paths are not a user flag. Discovery starts at `_HARNESS_ROOTS` under `Path.home()` and walks downward.
 
-`os.walk(..., followlinks=False)` does not recurse into directory symlinks. A `.jsonl` file that is itself a symlink is resolved with `Path.resolve()` and kept only when that real path is inside the harness root it was found under (`_resolved_inside` in `gh/discover.py`). A link that escapes the root is refused before `stat`/`open` of the target. It is counted and named in NOT COUNTED as `1 file skipped (symlink points outside the history directory)`. The scan is partial. The target path is not printed.
+`os.walk(..., followlinks=False, onerror=...)` does not recurse into directory symlinks. A directory the walk cannot open is recorded, named in NOT COUNTED, and forces `PARTIAL SCAN — NOT A CLEAN RESULT`. A `.jsonl` file that is itself a symlink is resolved with `Path.resolve()` and kept only when that real path is inside the harness root it was found under (`_resolved_inside` in `gh/discover.py`). A link that escapes the root is refused before `stat`/`open` of the target. It is counted and named in NOT COUNTED as `1 file skipped (symlink points outside the history directory)`. The scan is partial. The target path is not printed.
 
 A symlink whose target still sits inside the same history directory is treated as a normal session file.
 
@@ -66,7 +66,7 @@ Groundhog is not a web application. The two mappings below are the ones that act
 
 **A03:2025 Software Supply Chain Failures.** This category debuted at #3. On the [official A03 page](https://owasp.org/Top10/2025/A03_2025-Software_Supply_Chain_Failures/) it has the highest average incidence rate in the 2025 data (5.72%) and only 11 mapped CVEs. OWASP's own note is that this class is hard to test for: there is often no signature to scan. Groundhog's control is structural. Python 3 standard library only. No PyPI package, no lockfile, no native extension. The supply-chain surface is the CPython runtime on the machine plus this source. `prices.json` is data, not code.
 
-**A10:2025 Mishandling of Exceptional Conditions.** This is a new category for 2025. It covers failing open, poor error handling, and landing in an inconsistent state when something unusual happens. That is Groundhog's design thesis. A partial scan never renders as a clean null. Missing directories, broken JSONL, unreadable files, a hit of the 20-second parse budget, and failed pipeline stages become labeled NOT COUNTED. Estimates are never presented as measurements. Unknown stays unknown. Rendering emptiness as safety is an A10 failure. The five verdict classes exist so that cannot happen here.
+**A10:2025 Mishandling of Exceptional Conditions.** This is a new category for 2025. It covers failing open, poor error handling, and landing in an inconsistent state when something unusual happens. That is Groundhog's design thesis. A partial scan never renders as a clean null. Missing directories, broken JSONL, unreadable files, unreadable subdirectories under a harness root, a hit of the 20-second parse budget, and failed pipeline stages become labeled NOT COUNTED. Estimates are never presented as measurements. Unknown stays unknown. Rendering emptiness as safety is an A10 failure. The five verdict classes exist so that cannot happen here.
 
 The remaining 2025 categories, briefly:
 
