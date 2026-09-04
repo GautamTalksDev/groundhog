@@ -12,7 +12,7 @@
  *   author: groundhog
  * metadata:
  *   rote_version: 0.79.0
- *   version: 0.0.4
+ *   version: 0.0.5
  *   status: released
  *   kind: atomic
  *   flow_type: sequential
@@ -125,7 +125,7 @@
  *   report:
  *     type: process.exec
  *     timeout_ms: 60000
- *     depends_on: [rank]
+ *     depends_on: [rank, parse]
  *     argv:
  *       - python3
  *       - "@resource{python/steps/report.py}"
@@ -135,6 +135,7 @@
  *       - $min_runs
  *       - $redact
  *       - artifacts/report.json
+ *       - artifacts/parse.json
  * ---
  */
 

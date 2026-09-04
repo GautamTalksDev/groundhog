@@ -7,6 +7,7 @@ import unittest
 
 from gh.rank import Candidate, EvidenceItem, RankResult
 from gh.render import (
+    ProjectView,
     build_report,
     render_json,
     render_text,
@@ -132,6 +133,43 @@ class RenderTextTests(unittest.TestCase):
         self.assertIn("several months of history", text)
         self.assertNotIn("Try --days 30", text)
         self.assertNotIn("Try --min-runs 2", text)
+        self.assertIn("(no project totals in this window)", text)
+
+    def test_empty_candidates_still_show_session_project_totals(self) -> None:
+        report = build_report(
+            days=60,
+            min_runs=3,
+            top=3,
+            session_count=178,
+            harness_statuses={"cursor": "found", "claude_code": "absent"},
+            rank_result=RankResult(candidates=[]),
+            skipped=[],
+            session_projects=[
+                ProjectView(
+                    project="GASKET",
+                    tokens=12_000,
+                    usd=0.42,
+                    basis="estimated",
+                    run_count=40,
+                    input_tokens=12_000,
+                ),
+                ProjectView(
+                    project="Lading",
+                    tokens=8_000,
+                    usd=0.21,
+                    basis="estimated",
+                    run_count=20,
+                    input_tokens=8_000,
+                ),
+            ],
+        )
+        text = render_text(report)
+        self.assertIn("WHERE YOUR TOKENS WENT", text)
+        self.assertIn("GASKET", text)
+        self.assertIn("Lading", text)
+        self.assertIn("$0.42", text)
+        self.assertIn("estimated", text)
+        self.assertNotIn("(no project totals in this window)", text)
 
     def test_nothing_skipped_when_clean(self) -> None:
         report = build_report(

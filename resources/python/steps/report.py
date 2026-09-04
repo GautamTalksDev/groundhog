@@ -9,9 +9,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _common import emit  # noqa: E402
 from step_io import load_json_arg, write_artifact  # noqa: E402
+from gh.cost import load_prices, project_costs_from_sessions  # noqa: E402
 from gh.discover import checked_locations  # noqa: E402
+from gh.parse import Session, Turn  # noqa: E402
 from gh.rank import Candidate, EvidenceItem, RankResult  # noqa: E402
-from gh.render import build_report, render_json, render_text  # noqa: E402
+from gh.render import (  # noqa: E402
+    build_report,
+    projects_from_session_costs,
+    render_json,
+    render_text,
+)
 
 
 def main(argv: list[str]) -> int:
@@ -23,6 +30,7 @@ def main(argv: list[str]) -> int:
     redact_raw = (argv[5] if len(argv) > 5 else "true").strip().lower()
     redact = redact_raw not in ("0", "false", "no", "off")
     out_path = argv[6] if len(argv) > 6 else None
+    parse_path = argv[7] if len(argv) > 7 else None
 
     meta = payload.get("meta") or {}
     candidates = []
@@ -64,6 +72,18 @@ def main(argv: list[str]) -> int:
             )
         )
 
+    session_projects = []
+    if not candidates and parse_path:
+        parse_payload = load_json_arg(parse_path)
+        sessions = _hydrate_sessions(parse_payload)
+        if sessions:
+            prices = load_prices(
+                Path(__file__).resolve().parent.parent / "prices.json"
+            )
+            session_projects = projects_from_session_costs(
+                project_costs_from_sessions(sessions, prices)
+            )
+
     report = build_report(
         days=days,
         min_runs=min_runs,
@@ -78,11 +98,41 @@ def main(argv: list[str]) -> int:
         time_truncated=bool(meta.get("truncated")),
         files_read=int(meta.get("files_read") or 0),
         files_total=int(meta.get("files_total") or 0),
+        session_projects=session_projects or None,
     )
     out = {"text": render_text(report), "json": json.loads(render_json(report))}
     write_artifact(out_path, out)
     emit(out)
     return 0
+
+
+def _hydrate_sessions(payload: dict) -> list[Session]:
+    sessions: list[Session] = []
+    for s in payload.get("sessions") or []:
+        turns = [
+            Turn(
+                role=t["role"],
+                text=t.get("text") or "",
+                timestamp=t.get("timestamp"),
+                input_tokens=t.get("input_tokens"),
+                output_tokens=t.get("output_tokens"),
+                cache_read_tokens=t.get("cache_read_tokens"),
+                model=t.get("model"),
+            )
+            for t in s.get("turns") or []
+        ]
+        sessions.append(
+            Session(
+                session_id=s["session_id"],
+                harness=s["harness"],
+                project=s["project"],
+                started_at=s.get("started_at"),
+                ended_at=s.get("ended_at"),
+                turns=turns,
+                parse_status=s.get("parse_status") or "ok",
+            )
+        )
+    return sessions
 
 
 if __name__ == "__main__":

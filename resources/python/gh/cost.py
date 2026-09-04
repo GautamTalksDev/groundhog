@@ -9,6 +9,7 @@ from typing import Any, Optional, Union
 
 from gh.cluster import Cluster
 from gh.intents import Intent
+from gh.parse import Session
 
 # Chars-per-token used only when usage fields are absent from the file.
 _CHARS_PER_TOKEN = 4.0
@@ -27,6 +28,23 @@ class CostBreakdown:
     usd: float
     basis: str  # measured | estimated | unknown
     price_model: str = "default"  # longest-prefix key used (or default)
+
+
+@dataclass
+class ProjectCost:
+    """Per-project token/usd totals rolled up from parsed sessions."""
+
+    project: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    usd: float = 0.0
+    basis: str = "unknown"
+    session_count: int = 0
+
+    @property
+    def tokens(self) -> int:
+        return self.input_tokens + self.output_tokens + self.cache_read_tokens
 
 
 def load_prices(path: Optional[Union[str, Path]] = None) -> dict[str, Any]:
@@ -123,6 +141,54 @@ def cost_for_cluster(
     )
 
 
+def project_costs_from_sessions(
+    sessions: list[Session], prices: dict[str, Any]
+) -> list[ProjectCost]:
+    """Roll up measured/estimated cost per project across all sessions."""
+    buckets: dict[str, ProjectCost] = {}
+    for session in sessions:
+        name = (session.project or "").strip() or "unknown"
+        part = cost_for_session(session, prices)
+        roll = buckets.get(name)
+        if roll is None:
+            roll = ProjectCost(project=name, basis=part.basis)
+            buckets[name] = roll
+        else:
+            roll.basis = _worse_basis(roll.basis, part.basis)
+        roll.input_tokens += part.input_tokens
+        roll.output_tokens += part.output_tokens
+        roll.cache_read_tokens += part.cache_read_tokens
+        roll.usd += part.usd
+        roll.session_count += 1
+    for roll in buckets.values():
+        roll.usd = round(roll.usd, 6)
+    return sorted(
+        buckets.values(),
+        key=lambda p: (-p.usd, -p.tokens, p.project.lower()),
+    )
+
+
+def cost_for_session(session: Session, prices: dict[str, Any]) -> CostBreakdown:
+    """Cost one parsed session with the same measured/estimated/unknown rules."""
+    usage = _usage_from_session(session)
+    intent = Intent(
+        session_id=session.session_id,
+        harness=session.harness,
+        project=session.project or "unknown",
+        timestamp=session.started_at,
+        raw_text="",
+        normalized="",
+        session_turn_count=len(session.turns),
+        session_tokens=usage["session_tokens"],
+        session_input_tokens=usage["input_tokens"],
+        session_output_tokens=usage["output_tokens"],
+        session_cache_read_tokens=usage["cache_read_tokens"],
+        session_model=usage["model"],
+        session_text_chars=usage["text_chars"],
+    )
+    return _cost_for_intent(intent, prices)
+
+
 def cost_breakdown_dict(cost: CostBreakdown) -> dict[str, Any]:
     """JSON-ready dict; basis always present beside the dollar figure."""
     return asdict(cost)
@@ -184,3 +250,48 @@ def _coerce_rates(raw: Any) -> Optional[dict[str, float]]:
 
 def _worse_basis(a: str, b: str) -> str:
     return a if _BASIS_RANK.get(a, 9) >= _BASIS_RANK.get(b, 9) else b
+
+
+def _usage_from_session(session: Session) -> dict:
+    """Aggregate per-session token fields; None means absent (not zero)."""
+    input_total = 0
+    output_total = 0
+    cache_total = 0
+    saw_input = False
+    saw_output = False
+    saw_cache = False
+    model: Optional[str] = None
+    text_chars = 0
+
+    for turn in session.turns:
+        text_chars += len(turn.text or "")
+        if turn.model and not model:
+            model = turn.model
+        if turn.input_tokens is not None:
+            input_total += turn.input_tokens
+            saw_input = True
+        if turn.output_tokens is not None:
+            output_total += turn.output_tokens
+            saw_output = True
+        if turn.cache_read_tokens is not None:
+            cache_total += turn.cache_read_tokens
+            saw_cache = True
+
+    session_tokens: Optional[int]
+    if saw_input or saw_output or saw_cache:
+        session_tokens = (
+            (input_total if saw_input else 0)
+            + (output_total if saw_output else 0)
+            + (cache_total if saw_cache else 0)
+        )
+    else:
+        session_tokens = None
+
+    return {
+        "session_tokens": session_tokens,
+        "input_tokens": input_total if saw_input else None,
+        "output_tokens": output_total if saw_output else None,
+        "cache_read_tokens": cache_total if saw_cache else None,
+        "model": model,
+        "text_chars": text_chars,
+    }

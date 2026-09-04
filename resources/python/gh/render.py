@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
 from gh import SCHEMA_VERSION
+from gh.cost import ProjectCost
 from gh.rank import Candidate, RankResult
 
 # Friendly harness labels for strangers (never leak snake_case internals).
@@ -109,6 +110,7 @@ def build_report(
     time_truncated: bool = False,
     files_read: int = 0,
     files_total: int = 0,
+    session_projects: list[ProjectView] | None = None,
 ) -> Report:
     """Assemble the shared report model from pipeline outputs."""
     from gh.redact import EVIDENCE_LIMIT, redact_text
@@ -130,6 +132,8 @@ def build_report(
             view.label = redact_text(view.label, limit=None)
 
     projects = _projects_from_candidates(shown)
+    if not projects and session_projects:
+        projects = list(session_projects)
     not_counted = _not_counted_lines(
         harness_statuses=harness_statuses,
         skipped=skipped,
@@ -142,6 +146,7 @@ def build_report(
         time_truncated=time_truncated,
         files_read=files_read,
         files_total=files_total,
+        session_projects=projects if not shown else None,
     )
 
     return Report(
@@ -409,6 +414,29 @@ def _projects_from_candidates(candidates: list[Candidate]) -> list[ProjectView]:
     )
 
 
+def projects_from_session_costs(costs: list[ProjectCost]) -> list[ProjectView]:
+    """Turn all-session project costs into the report's project rows."""
+    views: list[ProjectView] = []
+    for cost in costs:
+        views.append(
+            ProjectView(
+                project=cost.project,
+                tokens=cost.tokens,
+                usd=cost.usd,
+                basis=cost.basis,
+                run_count=cost.session_count,
+                candidates=0,
+                input_tokens=cost.input_tokens,
+                output_tokens=cost.output_tokens,
+                cache_read_tokens=cost.cache_read_tokens,
+            )
+        )
+    return sorted(
+        views,
+        key=lambda p: (-p.usd, -p.tokens, p.project.lower()),
+    )
+
+
 def _not_counted_lines(
     *,
     harness_statuses: dict[str, str],
@@ -422,6 +450,7 @@ def _not_counted_lines(
     time_truncated: bool = False,
     files_read: int = 0,
     files_total: int = 0,
+    session_projects: list[ProjectView] | None = None,
 ) -> list[str]:
     items: list[str] = []
 
@@ -461,6 +490,8 @@ def _not_counted_lines(
         )
 
     estimated = [c for c in candidates_shown if c.cost_basis == "estimated"]
+    if not estimated and session_projects:
+        estimated = [p for p in session_projects if p.basis == "estimated"]
     if estimated:
         items.append(
             f"{len(estimated)} cost figure"
@@ -469,6 +500,8 @@ def _not_counted_lines(
         )
 
     unknown = [c for c in candidates_shown if c.cost_basis == "unknown"]
+    if not unknown and session_projects:
+        unknown = [p for p in session_projects if p.basis == "unknown"]
     if unknown:
         items.append(
             f"{len(unknown)} cost figure"

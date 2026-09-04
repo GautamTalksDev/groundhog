@@ -8,10 +8,13 @@ from pathlib import Path
 from gh.cluster import Cluster
 from gh.cost import (
     cost_for_cluster,
+    cost_for_session,
     load_prices,
+    project_costs_from_sessions,
     resolve_model_price,
 )
 from gh.intents import Intent, normalize_intent
+from gh.parse import Session, Turn
 
 PRICES = load_prices(Path(__file__).resolve().parent.parent / "prices.json")
 
@@ -135,6 +138,98 @@ class CostBasisTests(unittest.TestCase):
         )
         cost = cost_for_cluster(_cluster([a, b]), PRICES)
         self.assertEqual(cost.input_tokens, 1000)
+
+
+class SessionProjectCostTests(unittest.TestCase):
+    def test_rollups_all_sessions_when_grouped_by_project(self) -> None:
+        sessions = [
+            Session(
+                session_id="a",
+                harness="cursor",
+                project="GASKET",
+                started_at="2026-08-31T12:00:00Z",
+                ended_at="2026-08-31T12:10:00Z",
+                turns=[
+                    Turn("user", "Explore the repo for CP-5", None, None, None, None, None),
+                    Turn(
+                        "assistant",
+                        "Looking.",
+                        None,
+                        1_000_000,
+                        0,
+                        0,
+                        "claude-sonnet-4-20250514",
+                    ),
+                ],
+                parse_status="ok",
+            ),
+            Session(
+                session_id="b",
+                harness="cursor",
+                project="Keyring",
+                started_at="2026-08-31T13:00:00Z",
+                ended_at="2026-08-31T13:10:00Z",
+                turns=[
+                    Turn("user", "Explore the repo for CP-4", None, None, None, None, None),
+                    Turn(
+                        "assistant",
+                        "Looking.",
+                        None,
+                        500_000,
+                        0,
+                        0,
+                        "claude-sonnet-4-20250514",
+                    ),
+                ],
+                parse_status="ok",
+            ),
+            Session(
+                session_id="c",
+                harness="cursor",
+                project="GASKET",
+                started_at="2026-09-01T12:00:00Z",
+                ended_at="2026-09-01T12:10:00Z",
+                turns=[
+                    Turn("user", "xxxx", None, None, None, None, None),
+                    Turn(
+                        "assistant",
+                        "ok",
+                        None,
+                        500_000,
+                        0,
+                        0,
+                        "claude-sonnet-4-20250514",
+                    ),
+                ],
+                parse_status="ok",
+            ),
+        ]
+        costs = project_costs_from_sessions(sessions, PRICES)
+        by_name = {c.project: c for c in costs}
+        self.assertEqual(set(by_name), {"GASKET", "Keyring"})
+        self.assertEqual(by_name["GASKET"].session_count, 2)
+        self.assertEqual(by_name["GASKET"].input_tokens, 1_500_000)
+        self.assertEqual(by_name["GASKET"].basis, "measured")
+        self.assertAlmostEqual(by_name["GASKET"].usd, 4.5, places=4)
+        self.assertEqual(by_name["Keyring"].session_count, 1)
+        self.assertEqual(by_name["Keyring"].input_tokens, 500_000)
+
+    def test_cost_for_session_estimates_from_text(self) -> None:
+        session = Session(
+            session_id="e",
+            harness="cursor",
+            project="Lading",
+            started_at="2026-08-24T12:00:00Z",
+            ended_at="2026-08-24T12:01:00Z",
+            turns=[
+                Turn("user", "a" * 400, None, None, None, None, None),
+            ],
+            parse_status="ok",
+        )
+        cost = cost_for_session(session, PRICES)
+        self.assertEqual(cost.basis, "estimated")
+        self.assertEqual(cost.input_tokens, 100)
+        self.assertGreater(cost.usd, 0.0)
 
 
 if __name__ == "__main__":

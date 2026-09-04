@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from gh.cluster import Cluster, cluster_intents
-from gh.cost import cost_for_cluster, load_prices
+from gh.cost import cost_for_cluster, load_prices, project_costs_from_sessions
 from gh.discover import (
     DiscoveryResult,
     checked_locations,
@@ -28,7 +28,13 @@ from gh.discover import (
 from gh.intents import extract_intents
 from gh.parse import ParseResult, parse_sessions
 from gh.rank import RankResult, score_candidates
-from gh.render import Report, build_report, render_json, render_text
+from gh.render import (
+    Report,
+    build_report,
+    projects_from_session_costs,
+    render_json,
+    render_text,
+)
 from gh.suggest import suggest_scaffold
 
 TIME_BUDGET_SECONDS = 20.0
@@ -273,6 +279,17 @@ def run_pipeline(args: argparse.Namespace) -> PipelineResult:
     )
     priced, rank_result = cost_rank
 
+    session_projects = []
+    if not getattr(rank_result, "candidates", None) and parsed.sessions:
+        session_projects = _safe_stage(
+            "session project costs",
+            lambda: projects_from_session_costs(
+                project_costs_from_sessions(parsed.sessions, prices)
+            ),
+            notes,
+            [],
+        )
+
     if args.verbose:
         try:
             print(format_discovery_table(discovery), file=sys.stderr)
@@ -327,6 +344,7 @@ def run_pipeline(args: argparse.Namespace) -> PipelineResult:
             time_truncated=parsed.truncated,
             files_read=parsed.files_read,
             files_total=parsed.files_total or len(discovery.files),
+            session_projects=session_projects or None,
         ),
         notes,
         _fallback_report(
