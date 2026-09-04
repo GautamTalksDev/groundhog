@@ -1,0 +1,6 @@
+{"type":"user","sessionId":"malformed-001","cwd":"/home/dev/messy","timestamp":"2026-08-22T12:00:00Z","message":{"role":"user","content":"Start a cleanup pass"}}
+THIS LINE IS TRUNCATED AND NOT VALID JSON
+{"type":"assistant","sessionId":"malformed-001","timestamp":"2026-08-22T12:00:10Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"assistant","sessionId":"malformed-001","timestamp":"2026-08-22T12:00:20Z","message":{"role":"assistant","content":{"unexpected":"shape","nested":true}}}
+{"type":"assistant","sessionId":"malformed-001","timestamp":"2026-08-22T12:00:30Z","model":"claude-sonnet-4-20250514","message":{"role":"assistant","content":[{"type":"text","text":"Cleanup done without usage stats."}]}}
+{"not":"a turn at all","foo":123}
