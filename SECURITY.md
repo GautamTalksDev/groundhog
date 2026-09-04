@@ -38,7 +38,9 @@ JSONL lines are `json.loads`'d. Transcript strings are never `eval`'d and never 
 
 Input paths are not a user flag. Discovery starts at `_HARNESS_ROOTS` under `Path.home()` and walks downward.
 
-`os.walk(..., followlinks=False)` does not recurse into directory symlinks. A `.jsonl` *file* that is itself a symlink is still `stat`'d and `open`'d with the defaults, which follow the link. A planted `evil.jsonl -> /etc/passwd` would not match the `.jsonl` filter unless the symlink name ends in `.jsonl`. A planted `leak.jsonl` pointing at another user's JSONL would be read, because that is how `open` works.
+`os.walk(..., followlinks=False)` does not recurse into directory symlinks. A `.jsonl` file that is itself a symlink is resolved with `Path.resolve()` and kept only when that real path is inside the harness root it was found under (`_resolved_inside` in `gh/discover.py`). A link that escapes the root is refused before `stat`/`open` of the target. It is counted and named in NOT COUNTED as `1 file skipped (symlink points outside the history directory)`. The scan is partial. The target path is not printed.
+
+A symlink whose target still sits inside the same history directory is treated as a normal session file.
 
 `--out` can write anywhere the user can write. Play `write_artifact` writes under the path rote passes in (`artifacts/...`).
 
@@ -56,22 +58,28 @@ Python 3 standard library only. No PyPI package, no lockfile, no native extensio
 
 The Play wrapper is TypeScript front matter plus a short presentation script that prints the report step's stdout. It does not add npm library dependencies inside this repository.
 
-## OWASP Top 10 (web)
+## OWASP Top 10:2025
 
-Groundhog is not a web application. Categories are listed anyway so it is obvious what was considered.
+The current list is [OWASP Top 10:2025](https://owasp.org/Top10/2025/0x00_2025-Introduction/), announced November 2025 and finalized January 2026. There is no 2026 revision. SSRF is not a standalone category. It was rolled into A01 Broken Access Control.
+
+Groundhog is not a web application. The two mappings below are the ones that actually describe this codebase.
+
+**A03:2025 Software Supply Chain Failures.** This category debuted at #3. On the [official A03 page](https://owasp.org/Top10/2025/A03_2025-Software_Supply_Chain_Failures/) it has the highest average incidence rate in the 2025 data (5.72%) and only 11 mapped CVEs. OWASP's own note is that this class is hard to test for: there is often no signature to scan. Groundhog's control is structural. Python 3 standard library only. No PyPI package, no lockfile, no native extension. The supply-chain surface is the CPython runtime on the machine plus this source. `prices.json` is data, not code.
+
+**A10:2025 Mishandling of Exceptional Conditions.** This is a new category for 2025. It covers failing open, poor error handling, and landing in an inconsistent state when something unusual happens. That is Groundhog's design thesis. A partial scan never renders as a clean null. Missing directories, broken JSONL, unreadable files, a hit of the 20-second parse budget, and failed pipeline stages become labeled NOT COUNTED. Estimates are never presented as measurements. Unknown stays unknown. Rendering emptiness as safety is an A10 failure. The five verdict classes exist so that cannot happen here.
+
+The remaining 2025 categories, briefly:
 
 | ID | Applies? |
 |----|----------|
-| A01 Broken Access Control | Weakly. The process can read any transcript the OS user can read, and `--out` can write any path that user can write. There is no extra access-control layer, and none is claimed. |
-| A02 Cryptographic Failures | Does not apply. No encryption of transcripts, no token storage, no TLS client. |
-| A03 Injection | JSON parsing only. Transcript text is not executed. `--out` is a file write, not a query. |
-| A04 Insecure Design | Applies as this threat model: reading secrets that already sit in chat logs, then printing a subset. |
-| A05 Security Misconfiguration | Default is `--redact` on. `--no-redact` is opt-in. |
-| A06 Vulnerable and Outdated Components | No third-party Python packages. Track CPython itself. |
-| A07 Identification and Authentication Failures | Does not apply. No accounts. |
-| A08 Software and Data Integrity Failures | No update channel inside the tool. You install a Play version or a git checkout. |
-| A09 Security Logging Failures | Does not apply as a service. Groundhog does not keep its own log. A report file you requested is your responsibility. |
-| A10 Server-Side Request Forgery | Does not apply. No outbound requests. |
+| A01 Broken Access Control | Weakly. The process can read any transcript the OS user can read, and `--out` can write any path that user can write. SSRF sits in this category in 2025. Groundhog has no outbound requests, so that slice does not apply. |
+| A02 Security Misconfiguration | Default is `--redact` on. `--no-redact` is opt-in. |
+| A04 Cryptographic Failures | Does not apply. No encryption of transcripts, no token storage, no TLS client. |
+| A05 Injection | JSON parsing only. Transcript text is not executed. `--out` is a file write, not a query. |
+| A06 Insecure Design | Applies as this threat model: reading secrets that already sit in chat logs, then printing a subset. |
+| A07 Authentication Failures | Does not apply. No accounts. |
+| A08 Software or Data Integrity Failures | No update channel inside the tool. You install a Play version or a git checkout. |
+| A09 Security Logging & Alerting Failures | Does not apply as a service. Groundhog does not keep its own log. A report file you requested is your responsibility. |
 
 ## OWASP LLM Top 10
 
@@ -87,7 +95,7 @@ Groundhog is not an LLM. It does not call a model.
 | LLM06 Excessive Agency | Does not apply. Groundhog does not invoke agent tools. |
 | LLM07 System Prompt Leakage | Does not apply. |
 | LLM08 Vector and Embedding Weaknesses | Does not apply. Clustering is lexical, in-process. |
-| LLM09 Misinformation | Applies as honesty rules. Estimates are labeled. A partial scan cannot render as a clean null. Unknowns stay unknown. |
+| LLM09 Misinformation | Applies as honesty rules. Same control as A10:2025: estimates are labeled, a partial scan cannot render as a clean null, unknowns stay unknown. |
 | LLM10 Unbounded Consumption | The 20-second parse deadline and smallest-first order bound work. A hostile huge file can still consume that window and a large line can consume memory. |
 
 ## Reporting a vulnerability
@@ -96,4 +104,4 @@ Groundhog is not an LLM. It does not call a model.
 2. Include the Groundhog version (`main.ts` `metadata.version` or the Play URI), the command you ran, and a minimal JSONL that shows the bug.
 3. Give a reasonable window before any public write-up.
 
-A missing redaction pattern is in scope if it leaks from default `--redact` output. A secret that lives only in the original session file, and never in the report, is already on disk and is out of scope unless Groundhog read it from outside the discovery roots.
+A missing redaction pattern is in scope if it leaks from default `--redact` output. A secret that lives only in the original session file, and never in the report, is already on disk and is out of scope unless Groundhog read it from outside the discovery roots. A file symlink that escapes a harness root and is parsed would be in scope; as of 0.1.0 that path is refused and named.

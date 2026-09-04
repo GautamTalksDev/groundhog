@@ -49,4 +49,5 @@ def discovery_dict(result) -> dict:
     return {
         "files": [session_file_dict(f) for f in result.files],
         "sources": dict(result.sources),
+        "skipped": [list(item) for item in (result.skipped or [])],
     }

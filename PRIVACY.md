@@ -13,7 +13,7 @@ Discovery only walks these roots under `$HOME` (`gh/discover.py`, `_HARNESS_ROOT
 | `~/.codex/history/` | Older Codex history in the same JSONL shape. |
 | `~/.cursor/projects/<dir>/agent-transcripts/` | Cursor agent transcripts. `<dir>` is a project folder name. |
 
-Inside those trees, only files whose name ends in `.jsonl` are opened, and only if the file mtime is inside the look-back window. Non-JSONL files in the same directories are ignored. The walk does not descend through directory symlinks (`os.walk(..., followlinks=False)`).
+Inside those trees, only files whose name ends in `.jsonl` are opened, and only if the file mtime is inside the look-back window. Non-JSONL files in the same directories are ignored. The walk does not descend through directory symlinks (`os.walk(..., followlinks=False)`). A `.jsonl` that is itself a symlink is resolved with `Path.resolve()`. If the real path falls outside the harness root it was found under, Groundhog refuses it, counts it, and names it in NOT COUNTED as `1 file skipped (symlink points outside the history directory)`. The target is not parsed.
 
 `--suggest` (CLI only) re-opens those same discovered session files to recover tool-use names for a scaffold. It does not add new roots.
 
@@ -76,6 +76,7 @@ grep -RInE 'urlopen|http\.client|socket\.socket|requests\.|aiohttp|fetch\(' \
 # Discovery roots and symlink policy
 grep -n -A6 '_HARNESS_ROOTS' gh/discover.py
 grep -n 'followlinks' gh/discover.py
+grep -n '_resolved_inside\|SKIP_SYMLINK_OUTSIDE' gh/discover.py
 
 # CLI writes only via --out
 grep -n 'args.out' groundhog.py

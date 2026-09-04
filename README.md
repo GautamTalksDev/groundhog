@@ -118,7 +118,7 @@ NOT COUNTED lists what was missing, skipped, estimated, or unread.
 
 ## Supported harnesses
 
-Discovery roots are under `$HOME`. Only `*.jsonl` files are opened. Directory symlinks are not followed (`os.walk(..., followlinks=False)`).
+Discovery roots are under `$HOME`. Only `*.jsonl` files are opened. Directory symlinks are not followed (`os.walk(..., followlinks=False)`). A `.jsonl` file symlink is kept only when `Path.resolve()` lands inside the harness root it was found under. Otherwise it is named in NOT COUNTED and never parsed.
 
 | Harness | Directories | What Groundhog reads from those files |
 |---------|-------------|----------------------------------------|

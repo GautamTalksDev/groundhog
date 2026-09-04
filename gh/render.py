@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from gh import SCHEMA_VERSION
 from gh.cost import ProjectCost
+from gh.discover import SKIP_SYMLINK_OUTSIDE
 from gh.rank import Candidate, RankResult
 from gh.context_rediscovery import RediscoveryReport
 
@@ -188,12 +189,18 @@ def build_report(
 
     real_skipped = _real_skipped(skipped)
     unread = max(0, files_total - files_read) if time_truncated else 0
+    symlink_skips = [
+        item for item in real_skipped if item[1] == SKIP_SYMLINK_OUTSIDE
+    ]
+    opened_skips = [
+        item for item in real_skipped if item[1] != SKIP_SYMLINK_OUTSIDE
+    ]
     files_skipped = len(real_skipped) + unread
-    files_parsed = max(0, files_read - len(real_skipped))
+    files_parsed = max(0, files_read - len(opened_skips))
     coverage = Coverage(
         directories_checked=len(locations_checked or []),
         agents_detected=found,
-        files_discovered=files_total,
+        files_discovered=files_total + len(symlink_skips),
         files_parsed=files_parsed,
         files_skipped=files_skipped,
         sessions_analyzed=session_count,
@@ -784,12 +791,21 @@ def _not_counted_lines(
         for p, r in skipped
         if p != "(remaining files)" and "time budget hit" not in r
     ]
-    if real_skipped:
-        if len(real_skipped) == 1:
-            _path, reason = real_skipped[0]
+    symlink_n = sum(1 for _, r in real_skipped if r == SKIP_SYMLINK_OUTSIDE)
+    other_skipped = [
+        (p, r) for p, r in real_skipped if r != SKIP_SYMLINK_OUTSIDE
+    ]
+    if symlink_n:
+        items.append(
+            f"{symlink_n} file{'s' if symlink_n != 1 else ''} skipped "
+            f"({SKIP_SYMLINK_OUTSIDE})"
+        )
+    if other_skipped:
+        if len(other_skipped) == 1:
+            _path, reason = other_skipped[0]
             items.append(f"1 session file skipped ({reason})")
         else:
-            items.append(f"{len(real_skipped)} session files skipped")
+            items.append(f"{len(other_skipped)} session files skipped")
 
     if malformed_lines:
         items.append(

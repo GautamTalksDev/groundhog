@@ -155,6 +155,48 @@ class E2ETests(unittest.TestCase):
         self.assertIn("<redacted>", cleaned)
         self.assertLessEqual(len(cleaned), 120)
 
+    def test_symlink_escape_jsonl_is_named_not_parsed(self) -> None:
+        secret = "UNIQUE_SYMLINK_SECRET_xyzzyspoon"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            outside = tmp_path / "secret.jsonl"
+            outside.write_text(
+                json.dumps(
+                    {
+                        "type": "user",
+                        "sessionId": "leak-1",
+                        "cwd": "/tmp/secret-project",
+                        "timestamp": "2026-09-01T12:00:00Z",
+                        "message": {"role": "user", "content": secret},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            transcripts = (
+                tmp_path
+                / "home"
+                / ".cursor"
+                / "projects"
+                / "home-x-projects-Evil"
+                / "agent-transcripts"
+            )
+            transcripts.mkdir(parents=True)
+            (transcripts / "leak.jsonl").symlink_to(outside)
+            out = tmp_path / "report.txt"
+            with mock.patch.dict(os.environ, {"HOME": str(tmp_path / "home")}):
+                code = main(["--days", "3650", "--out", str(out)])
+            self.assertEqual(code, 0)
+            text = out.read_text(encoding="utf-8")
+        self.assertIn("PARTIAL SCAN", text)
+        self.assertIn(
+            "1 file skipped (symlink points outside the history directory)",
+            text,
+        )
+        self.assertNotIn(secret, text)
+        self.assertNotIn(str(outside), text)
+        self.assertNotIn("UNIQUE_SYMLINK_SECRET", text)
+
 
 if __name__ == "__main__":
     unittest.main()

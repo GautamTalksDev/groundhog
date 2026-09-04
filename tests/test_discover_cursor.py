@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from gh.discover import cursor_project_name, discover_harness
+from gh.discover import SKIP_SYMLINK_OUTSIDE, cursor_project_name, discover_harness
 
 
 FIXTURE_HOME = Path(__file__).resolve().parent / "fixtures" / "cursor_home"
@@ -58,6 +58,56 @@ class CursorDiscoverTests(unittest.TestCase):
             result = discover_harness("cursor", days=30, home=Path(tmp))
         self.assertEqual(result.sources["cursor"], "absent")
         self.assertEqual(result.files, [])
+        self.assertEqual(result.skipped, [])
+
+    def test_symlink_escaping_root_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            outside = tmp_path / "outside.jsonl"
+            outside.write_text('{"role":"user","message":{"content":"secret"}}\n')
+            transcripts = (
+                tmp_path
+                / "home"
+                / ".cursor"
+                / "projects"
+                / "home-x-projects-Evil"
+                / "agent-transcripts"
+            )
+            transcripts.mkdir(parents=True)
+            leak = transcripts / "leak.jsonl"
+            leak.symlink_to(outside)
+            result = discover_harness(
+                "cursor", days=36500, home=tmp_path / "home"
+            )
+        self.assertEqual(result.files, [])
+        self.assertEqual(len(result.skipped), 1)
+        path, reason = result.skipped[0]
+        self.assertTrue(path.endswith("leak.jsonl"))
+        self.assertEqual(reason, SKIP_SYMLINK_OUTSIDE)
+        self.assertNotIn(str(outside), path)
+
+    def test_symlink_inside_root_is_kept(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            transcripts = (
+                tmp_path
+                / "home"
+                / ".cursor"
+                / "projects"
+                / "home-x-projects-Ok"
+                / "agent-transcripts"
+            )
+            transcripts.mkdir(parents=True)
+            real = transcripts / "real.jsonl"
+            real.write_text('{"role":"user","message":{"content":"ok"}}\n')
+            alias = transcripts / "alias.jsonl"
+            alias.symlink_to(real)
+            result = discover_harness(
+                "cursor", days=36500, home=tmp_path / "home"
+            )
+        names = {Path(f.path).name for f in result.files}
+        self.assertEqual(names, {"real.jsonl", "alias.jsonl"})
+        self.assertEqual(result.skipped, [])
 
 
 if __name__ == "__main__":

@@ -19,12 +19,17 @@ class SessionFile:
     project: str = ""
 
 
+# Reason string rendered in NOT COUNTED. Keep in sync with gh.render.
+SKIP_SYMLINK_OUTSIDE = "symlink points outside the history directory"
+
+
 @dataclass
 class DiscoveryResult:
     """Outcome of scanning local harness session roots."""
 
     files: list[SessionFile] = field(default_factory=list)
     sources: dict[str, str] = field(default_factory=dict)
+    skipped: list[tuple[str, str]] = field(default_factory=list)
 
 
 # Harness name -> one or more root directories under $HOME.
@@ -77,6 +82,7 @@ def discover_sessions(days: int, home: Path | None = None) -> DiscoveryResult:
         partial = discover_harness(harness, days, home=home)
         result.sources[harness] = partial.sources.get(harness, "absent")
         result.files.extend(partial.files)
+        result.skipped.extend(partial.skipped)
     result.files.sort(key=lambda f: f.mtime, reverse=True)
     return result
 
@@ -95,44 +101,48 @@ def discover_harness(
     base = home if home is not None else Path.home()
     root_statuses: list[str] = []
     harness_files: list[SessionFile] = []
+    harness_skipped: list[tuple[str, str]] = []
 
     for rel in rel_roots:
         root = base / rel
         if harness == "cursor":
-            status, found = _scan_cursor_projects(root, cutoff)
+            status, found, skipped = _scan_cursor_projects(root, cutoff)
         else:
-            status, found = _scan_root(root, harness, cutoff)
+            status, found, skipped = _scan_root(root, harness, cutoff)
         root_statuses.append(status)
         harness_files.extend(found)
+        harness_skipped.extend(skipped)
 
     result.sources[harness] = _combine_statuses(root_statuses)
     result.files = harness_files
+    result.skipped = harness_skipped
     result.files.sort(key=lambda f: f.mtime, reverse=True)
     return result
 
 
 def _scan_cursor_projects(
     projects_root: Path, cutoff: float
-) -> tuple[str, list[SessionFile]]:
+) -> tuple[str, list[SessionFile], list[tuple[str, str]]]:
     """Scan ``~/.cursor/projects/*/agent-transcripts/**/*.jsonl``. Never raises."""
     try:
         if not projects_root.exists():
-            return "absent", []
+            return "absent", [], []
     except OSError as exc:
-        return f"unreadable: {exc}", []
+        return f"unreadable: {exc}", [], []
 
     try:
         if not projects_root.is_dir():
-            return f"unreadable: not a directory: {projects_root}", []
+            return f"unreadable: not a directory: {projects_root}", [], []
     except OSError as exc:
-        return f"unreadable: {exc}", []
+        return f"unreadable: {exc}", [], []
 
     try:
         entries = os.listdir(projects_root)
     except OSError as exc:
-        return f"unreadable: {exc}", []
+        return f"unreadable: {exc}", [], []
 
     files: list[SessionFile] = []
+    skipped: list[tuple[str, str]] = []
     try:
         for name in entries:
             project_dir = projects_root / name
@@ -142,7 +152,8 @@ def _scan_cursor_projects(
             except OSError:
                 continue
             transcripts = project_dir / "agent-transcripts"
-            _status, found = _scan_root(transcripts, "cursor", cutoff)
+            _status, found, refused = _scan_root(transcripts, "cursor", cutoff)
+            skipped.extend(refused)
             project = cursor_project_name(name)
             for sf in found:
                 files.append(
@@ -155,41 +166,59 @@ def _scan_cursor_projects(
                     )
                 )
     except OSError as exc:
-        if not files:
-            return f"unreadable: {exc}", []
+        if not files and not skipped:
+            return f"unreadable: {exc}", [], []
 
-    return "found", files
+    return "found", files, skipped
+
+
+def _resolved_inside(path: Path, root: Path) -> bool:
+    """True if ``path`` resolves to a location inside ``root``. Never raises."""
+    try:
+        resolved = path.resolve()
+        root_resolved = root.resolve()
+    except OSError:
+        return False
+    try:
+        resolved.relative_to(root_resolved)
+    except ValueError:
+        return False
+    return True
 
 
 def _scan_root(
     root: Path, harness: str, cutoff: float
-) -> tuple[str, list[SessionFile]]:
-    """Scan one root. Returns (status, files). Never raises."""
+) -> tuple[str, list[SessionFile], list[tuple[str, str]]]:
+    """Scan one root. Returns (status, files, skipped). Never raises."""
     try:
         if not root.exists():
-            return "absent", []
+            return "absent", [], []
     except OSError as exc:
-        return f"unreadable: {exc}", []
+        return f"unreadable: {exc}", [], []
 
     try:
         if not root.is_dir():
-            return f"unreadable: not a directory: {root}", []
+            return f"unreadable: not a directory: {root}", [], []
     except OSError as exc:
-        return f"unreadable: {exc}", []
+        return f"unreadable: {exc}", [], []
 
     # Confirm the directory itself is listable before walking.
     try:
         os.listdir(root)
     except OSError as exc:
-        return f"unreadable: {exc}", []
+        return f"unreadable: {exc}", [], []
 
     files: list[SessionFile] = []
+    skipped: list[tuple[str, str]] = []
     try:
         for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
             for name in filenames:
                 if not name.endswith(".jsonl"):
                     continue
                 path = Path(dirpath) / name
+                if not _resolved_inside(path, root):
+                    skipped.append((str(path), SKIP_SYMLINK_OUTSIDE))
+                    continue
                 try:
                     st = path.stat()
                 except OSError:
@@ -207,10 +236,10 @@ def _scan_root(
                 )
     except OSError as exc:
         # Walk started then failed mid-way — keep what we have.
-        if not files:
-            return f"unreadable: {exc}", []
+        if not files and not skipped:
+            return f"unreadable: {exc}", [], []
 
-    return "found", files
+    return "found", files, skipped
 
 
 def _combine_statuses(statuses: list[str]) -> str:

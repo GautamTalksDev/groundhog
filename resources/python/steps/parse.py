@@ -42,6 +42,11 @@ def main(argv: list[str]) -> int:
     sources.update(claude.get("sources") or {})
     sources.update(codex.get("sources") or {})
     sources.update(cursor.get("sources") or {})
+    discovery_skipped: list[tuple[str, str]] = []
+    for payload in (claude, codex, cursor):
+        for item in payload.get("skipped") or []:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                discovery_skipped.append((str(item[0]), str(item[1])))
 
     deadline = time.monotonic() + TIME_BUDGET
     parsed = parse_sessions(files, deadline=deadline)
@@ -82,7 +87,7 @@ def main(argv: list[str]) -> int:
     payload = {
         "sources": sources,
         "sessions": sessions,
-        "skipped": list(parsed.skipped),
+        "skipped": list(parsed.skipped) + discovery_skipped,
         "malformed_lines": parsed.malformed_lines,
         "truncated": parsed.truncated,
         "files_read": parsed.files_read,
