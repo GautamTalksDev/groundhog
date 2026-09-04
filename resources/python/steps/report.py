@@ -36,6 +36,12 @@ def main(argv: list[str]) -> int:
                 cost_score=float(c.get("cost_score") or 0),
                 stability=float(c.get("stability") or 0),
                 run_count=int(c.get("run_count") or 0),
+                distinct_sessions=int(
+                    c.get("distinct_sessions")
+                    or len(c.get("session_ids") or [])
+                    or c.get("run_count")
+                    or 0
+                ),
                 usd=float(c.get("usd") or 0),
                 cost_basis=c.get("cost_basis") or "unknown",
                 recency_days=c.get("recency_days"),

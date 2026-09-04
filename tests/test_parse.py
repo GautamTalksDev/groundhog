@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
 from gh.discover import SessionFile
-from gh.parse import first_present, parse_sessions
+from gh.parse import first_present, parse_sessions, unwrap_cursor_text
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
@@ -124,6 +126,53 @@ class MalformedTests(unittest.TestCase):
         self.assertEqual(result.sessions, [])
         self.assertEqual(len(result.skipped), 1)
         self.assertIn("unreadable", result.skipped[0][1])
+
+
+class CursorTagStripTests(unittest.TestCase):
+    def test_parse_strips_timestamp_from_turn_text(self) -> None:
+        record = {
+            "role": "user",
+            "timestamp": "2026-08-31T19:13:00Z",
+            "message": {
+                "content": (
+                    "<timestamp>Monday, Aug 31, 2026, 3:13 PM (UTC-4)</timestamp>\n"
+                    "Explore the GASKET repo for checkpoint wire proxy "
+                    "implementation"
+                )
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cursor.jsonl"
+            path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+            st = path.stat()
+            result = parse_sessions(
+                [
+                    SessionFile(
+                        path=str(path),
+                        harness="cursor",
+                        mtime=st.st_mtime,
+                        size_bytes=st.st_size,
+                    )
+                ]
+            )
+        self.assertEqual(len(result.sessions), 1)
+        turn = result.sessions[0].turns[0]
+        self.assertNotIn("<", turn.text)
+        self.assertNotIn("timestamp", turn.text.lower())
+        self.assertTrue(turn.text.startswith("Explore the GASKET repo"))
+        self.assertEqual(turn.timestamp, "2026-08-31T15:13:00-04:00")
+
+    def test_unwrap_drops_timestamp_without_user_query(self) -> None:
+        query, ts = unwrap_cursor_text(
+            "<timestamp>Monday, Aug 31, 2026, 3:13 PM (UTC-4)</timestamp>\n"
+            "Explore the Keyring repo for checkpoint wire proxy implementation"
+        )
+        self.assertEqual(
+            query,
+            "Explore the Keyring repo for checkpoint wire proxy implementation",
+        )
+        self.assertNotIn("<", query)
+        self.assertEqual(ts, "2026-08-31T15:13:00-04:00")
 
 
 if __name__ == "__main__":

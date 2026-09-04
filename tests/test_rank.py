@@ -99,6 +99,77 @@ class RankTests(unittest.TestCase):
         # Without penalty score would be 1*1*1=1; with penalty 0.5.
         self.assertAlmostEqual(result.candidates[0].score, 0.5, places=4)
 
+    def test_frequency_uses_distinct_sessions_not_member_count(self) -> None:
+        now = datetime(2026, 9, 3, 18, 0, tzinfo=timezone.utc)
+        same_session = _cluster(
+            "dense",
+            [
+                _intent(
+                    "Fix the flaky authentication test in the login suite",
+                    session_id="only",
+                    turns=4,
+                    ts="2026-09-02T10:00:00Z",
+                ),
+                _intent(
+                    "Please fix flaky auth test inside login test suite",
+                    session_id="only",
+                    turns=4,
+                    ts="2026-09-02T11:00:00Z",
+                ),
+                _intent(
+                    "Repair the flaky login authentication test suite failure",
+                    session_id="only",
+                    turns=4,
+                    ts="2026-09-02T12:00:00Z",
+                ),
+                _intent(
+                    "Fix flaky auth tests that keep failing in login suite",
+                    session_id="only",
+                    turns=4,
+                    ts="2026-09-02T13:00:00Z",
+                ),
+                _intent(
+                    "Can you fix the flaky authentication tests in login",
+                    session_id="only",
+                    turns=4,
+                    ts="2026-09-03T09:00:00Z",
+                ),
+            ],
+            last_seen="2026-09-03T09:00:00Z",
+        )
+        across_sessions = _cluster(
+            "repeated",
+            [
+                _intent(
+                    "Fix the flaky authentication test in the login suite",
+                    session_id="a",
+                    turns=4,
+                    ts="2026-09-01T10:00:00Z",
+                ),
+                _intent(
+                    "Please fix flaky auth test inside login test suite",
+                    session_id="b",
+                    turns=4,
+                    ts="2026-09-02T10:00:00Z",
+                ),
+                _intent(
+                    "Repair the flaky login authentication test suite failure",
+                    session_id="c",
+                    turns=4,
+                    ts="2026-09-03T09:00:00Z",
+                ),
+            ],
+            last_seen="2026-09-03T09:00:00Z",
+        )
+        cost = CostBreakdown(2000, 800, 100, 0.20, "measured", "claude-sonnet-4")
+        result = score_candidates(
+            [same_session, across_sessions], [cost, cost], now=now
+        )
+        by_id = {c.cluster_id: c for c in result.candidates}
+        self.assertEqual(by_id["dense"].distinct_sessions, 1)
+        self.assertEqual(by_id["repeated"].distinct_sessions, 3)
+        self.assertGreater(by_id["repeated"].frequency, by_id["dense"].frequency)
+
 
 if __name__ == "__main__":
     unittest.main()

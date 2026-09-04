@@ -1,9 +1,12 @@
 schema_version = 1
 
+# Groundhog needs Python 3.8+ (stdlib only).
+
 [[tools]]
 id = "python3"
 command = "python3"
 required = true
+version_requirement = ">=3.8"
 
 [[tools.install]]
 manager = "apt"

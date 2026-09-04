@@ -75,6 +75,7 @@ def main(argv: list[str]) -> int:
                 "cost_score": cand.cost_score,
                 "stability": cand.stability,
                 "run_count": cand.run_count,
+                "distinct_sessions": cand.distinct_sessions,
                 "usd": cand.usd,
                 "cost_basis": cand.cost_basis,
                 "recency_days": cand.recency_days,

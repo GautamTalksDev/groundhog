@@ -14,9 +14,10 @@ import argparse
 import sys
 import time
 import traceback
+from dataclasses import dataclass
 from pathlib import Path
 
-from gh.cluster import cluster_intents
+from gh.cluster import Cluster, cluster_intents
 from gh.cost import cost_for_cluster, load_prices
 from gh.discover import (
     DiscoveryResult,
@@ -28,8 +29,20 @@ from gh.intents import extract_intents
 from gh.parse import ParseResult, parse_sessions
 from gh.rank import RankResult, score_candidates
 from gh.render import Report, build_report, render_json, render_text
+from gh.suggest import suggest_scaffold
 
 TIME_BUDGET_SECONDS = 20.0
+
+
+@dataclass
+class PipelineResult:
+    """Report plus intermediates needed for --suggest."""
+
+    report: Report
+    clusters: list
+    rank_result: RankResult
+    discovery: DiscoveryResult
+    notes: list[str]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -68,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--min-runs",
         type=int,
         default=3,
-        help="Minimum runs for a candidate (default: 3)",
+        help="Minimum distinct sessions for a candidate (default: 3)",
     )
     parser.add_argument(
         "--verbose",
@@ -102,6 +115,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--dump-candidates",
         action="store_true",
         help="Debug: dump ranked candidates",
+    )
+    parser.add_argument(
+        "--suggest",
+        action="store_true",
+        help="Emit a Play scaffold for a ranked candidate instead of the report",
+    )
+    parser.add_argument(
+        "--suggest-rank",
+        type=int,
+        default=1,
+        help="Which ranked candidate to scaffold (default: 1)",
     )
     return parser
 
@@ -145,7 +169,8 @@ def _dump_clusters(clusters, priced=None) -> None:
     for cluster in clusters:
         projects = ", ".join(sorted(cluster.projects)) or "unknown"
         print(
-            f"--- {cluster.id} runs={cluster.run_count} "
+            f"--- {cluster.id} sessions={cluster.distinct_sessions} "
+            f"members={cluster.run_count} "
             f"cohesion={cluster.cohesion:.2f} projects=[{projects}] ---",
             file=sys.stderr,
         )
@@ -190,7 +215,7 @@ def _fallback_report(
     )
 
 
-def run_pipeline(args: argparse.Namespace) -> Report:
+def run_pipeline(args: argparse.Namespace) -> PipelineResult:
     """Full analysis pipeline. Never raises — failures become NOT COUNTED."""
     notes: list[str] = []
     started = time.monotonic()
@@ -308,7 +333,71 @@ def run_pipeline(args: argparse.Namespace) -> Report:
             args, notes=notes, discovery=discovery, locations=locations
         ),
     )
-    return report
+    return PipelineResult(
+        report=report,
+        clusters=clusters if isinstance(clusters, list) else [],
+        rank_result=rank_result if isinstance(rank_result, RankResult) else RankResult(),
+        discovery=discovery if isinstance(discovery, DiscoveryResult) else _empty_discovery(),
+        notes=notes,
+    )
+
+
+def _render_suggest(args: argparse.Namespace, pipeline: PipelineResult) -> str:
+    rank = max(1, int(args.suggest_rank or 1))
+    candidates = pipeline.rank_result.candidates
+    if not candidates:
+        return (
+            "# Suggested Play scaffold\n\n"
+            "No ranked candidates in this window — nothing to scaffold.\n\n"
+            f"---\n\n"
+            "This is a starting point recovered from your transcripts. "
+            "Review every step and parameter before using it as a Play.\n"
+        )
+    if rank > len(candidates):
+        return (
+            f"# Suggested Play scaffold\n\n"
+            f"No candidate at rank #{rank} "
+            f"(only {len(candidates)} ranked).\n"
+        )
+    candidate = candidates[rank - 1]
+    cluster = next(
+        (c for c in pipeline.clusters if c.id == candidate.cluster_id),
+        None,
+    )
+    if cluster is None:
+        # Reconstruct a minimal cluster shell from the candidate evidence.
+        from gh.intents import Intent
+
+        members = [
+            Intent(
+                session_id=ev.session_id,
+                harness="unknown",
+                project=ev.project,
+                timestamp=ev.timestamp,
+                raw_text=ev.raw_text,
+                normalized="",
+                session_turn_count=0,
+                session_tokens=None,
+            )
+            for ev in candidate.evidence
+        ]
+        cluster = Cluster(
+            id=candidate.cluster_id,
+            members=members,
+            label=candidate.label,
+            projects=set(candidate.projects),
+            first_seen=candidate.first_seen,
+            last_seen=candidate.last_seen,
+            run_count=candidate.run_count,
+            cohesion=0.0,
+        )
+    result = suggest_scaffold(
+        candidate,
+        cluster,
+        pipeline.discovery.files,
+        rank=rank,
+    )
+    return result.markdown
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -321,21 +410,28 @@ def main(argv: list[str] | None = None) -> int:
         return code
 
     try:
-        report = run_pipeline(args)
+        pipeline = run_pipeline(args)
     except Exception as exc:  # noqa: BLE001 — last resort
         if args.verbose:
             traceback.print_exc(file=sys.stderr)
-        report = _fallback_report(
-            args,
+        pipeline = PipelineResult(
+            report=_fallback_report(
+                args,
+                notes=[f"pipeline failed ({type(exc).__name__}: {exc})"],
+            ),
+            clusters=[],
+            rank_result=RankResult(),
+            discovery=_empty_discovery(),
             notes=[f"pipeline failed ({type(exc).__name__}: {exc})"],
         )
 
     try:
-        output = (
-            render_json(report)
-            if args.format == "json"
-            else render_text(report)
-        )
+        if args.suggest:
+            output = _render_suggest(args, pipeline)
+        elif args.format == "json":
+            output = render_json(pipeline.report)
+        else:
+            output = render_text(pipeline.report)
     except Exception as exc:  # noqa: BLE001
         output = (
             "GROUNDHOG · could not render report\n\n"

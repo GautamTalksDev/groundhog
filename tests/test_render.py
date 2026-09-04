@@ -26,6 +26,7 @@ def _cand(**kwargs) -> Candidate:
         cost_score=kwargs.get("cost_score", 0.7),
         stability=kwargs.get("stability", 1.0),
         run_count=kwargs.get("run_count", 3),
+        distinct_sessions=kwargs.get("distinct_sessions", kwargs.get("run_count", 3)),
         usd=kwargs.get("usd", 0.32),
         cost_basis=kwargs.get("cost_basis", "measured"),
         recency_days=1.0,
@@ -105,10 +106,32 @@ class RenderTextTests(unittest.TestCase):
         )
         text = render_text(report)
         self.assertIn("YOU KEEP REDOING THIS", text)
-        self.assertIn("Nothing you've repeated 3+ times", text)
+        self.assertIn(
+            "No chore repeated across 3+ separate sessions in the last 14 days.",
+            text,
+        )
         self.assertIn("Try --days 30 or --min-runs 2.", text)
         self.assertIn("NOT COUNTED", text)
         self.assertIn("WHERE YOUR TOKENS WENT", text)
+
+    def test_empty_state_wide_window_does_not_suggest_stale_knobs(self) -> None:
+        report = build_report(
+            days=60,
+            min_runs=3,
+            top=3,
+            session_count=10,
+            harness_statuses={"cursor": "found", "claude_code": "absent"},
+            rank_result=RankResult(candidates=[]),
+            skipped=[],
+        )
+        text = render_text(report)
+        self.assertIn(
+            "No chore repeated across 3+ separate sessions in the last 60 days.",
+            text,
+        )
+        self.assertIn("several months of history", text)
+        self.assertNotIn("Try --days 30", text)
+        self.assertNotIn("Try --min-runs 2", text)
 
     def test_nothing_skipped_when_clean(self) -> None:
         report = build_report(
@@ -176,6 +199,30 @@ class SameDaySpanTests(unittest.TestCase):
         text = render_text(report)
         self.assertIn("5 times on 2026-08-24", text)
         self.assertNotIn("2026-08-24 → 2026-08-24", text)
+
+    def test_timespan_uses_distinct_sessions_not_member_count(self) -> None:
+        report = build_report(
+            days=30,
+            min_runs=3,
+            top=3,
+            session_count=5,
+            harness_statuses={"cursor": "found", "claude_code": "absent"},
+            rank_result=RankResult(
+                candidates=[
+                    _cand(
+                        first_seen="2026-08-20T12:00:00Z",
+                        last_seen="2026-08-29T18:00:00Z",
+                        run_count=8,
+                        distinct_sessions=3,
+                        label="Harden crates/gw-dom for reliability",
+                    )
+                ]
+            ),
+            skipped=[],
+        )
+        text = render_text(report)
+        self.assertIn("3 times · 2026-08-20 → 2026-08-29", text)
+        self.assertNotIn("8 times", text)
 
 
 if __name__ == "__main__":

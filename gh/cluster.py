@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from gh.intents import Intent, strip_leading_locative
+from gh.parse import unwrap_cursor_text
 
 # Cosine threshold for joining an existing cluster.
 # Higher → fewer, tighter clusters (precision). Lower → more merges (recall).
@@ -185,8 +186,13 @@ class Cluster:
     last_seen: Optional[str]
     run_count: int
     cohesion: float
+    # Unique session_id values among members. Repetition is sessions, not turns.
+    distinct_sessions: int = 0
     # Internal: running TF-IDF centroid (term → weight). Not for callers.
     _centroid: dict[str, float] = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        self.distinct_sessions = _distinct_session_count(self.members)
 
 
 def cluster_intents(
@@ -222,7 +228,9 @@ def cluster_intents(
         finalized.append(cluster)
 
     filtered = _precision_filter(finalized, min_runs=min_runs)
-    filtered.sort(key=lambda c: (-c.run_count, -c.cohesion, c.label.lower()))
+    filtered.sort(
+        key=lambda c: (-c.distinct_sessions, -c.cohesion, c.label.lower())
+    )
     # Re-number for stable dump output after filtering/sorting.
     for i, cluster in enumerate(filtered, 1):
         cluster.id = f"c{i}"
@@ -298,6 +306,7 @@ def _new_cluster(seq: int, intent: Intent, vec: dict[str, float]) -> Cluster:
         last_seen=intent.timestamp,
         run_count=1,
         cohesion=1.0,
+        distinct_sessions=1,
         _centroid=dict(vec),
     )
 
@@ -317,6 +326,7 @@ def _add_to_cluster(
     cluster.members.append(intent)
     cluster.projects.add(intent.project)
     cluster.run_count = len(cluster.members)
+    cluster.distinct_sessions = _distinct_session_count(cluster.members)
     ts = intent.timestamp
     if ts:
         if cluster.first_seen is None or ts < cluster.first_seen:
@@ -343,6 +353,7 @@ def _finalize(
     cluster.cohesion = _mean_pairwise(member_vecs)
     cluster.label = choose_cluster_label(cluster.members, member_vecs)
     cluster.run_count = len(cluster.members)
+    cluster.distinct_sessions = _distinct_session_count(cluster.members)
     cluster.projects = {m.project for m in cluster.members}
 
     timestamps = [m.timestamp for m in cluster.members if m.timestamp]
@@ -392,7 +403,7 @@ def _precision_filter(
 
     kept: list[Cluster] = []
     for cluster in clusters:
-        if cluster.run_count < min_runs:
+        if cluster.distinct_sessions < min_runs:
             continue
         if cluster.cohesion < MIN_COHESION:
             continue
@@ -406,6 +417,10 @@ def _precision_filter(
             continue
         kept.append(cluster)
     return kept
+
+
+def _distinct_session_count(members: list[Intent]) -> int:
+    return len({m.session_id for m in members})
 
 
 def _content_word_count(label: str) -> int:
@@ -479,7 +494,8 @@ def label_imperative_score(text: str) -> float:
 
 def clean_label(text: str, limit: int = _LABEL_LIMIT) -> str:
     """Strip markdown/locatives and truncate on a word boundary."""
-    s = (text or "").lstrip()
+    s, _ = unwrap_cursor_text(text or "")
+    s = s.lstrip()
     # Leading markdown emphasis (**bold**, *italics*, _).
     while s.startswith("**"):
         s = s[2:]

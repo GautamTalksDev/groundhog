@@ -42,6 +42,7 @@ class ClusterSameTaskTests(unittest.TestCase):
         clusters = cluster_intents(intents, min_runs=3)
         self.assertEqual(len(clusters), 1, clusters)
         self.assertEqual(clusters[0].run_count, 5)
+        self.assertEqual(clusters[0].distinct_sessions, 5)
         self.assertGreaterEqual(clusters[0].cohesion, 0.35)
         self.assertGreaterEqual(SIMILARITY_THRESHOLD, 0.4)
 
@@ -76,6 +77,59 @@ class PrecisionFilterTests(unittest.TestCase):
         ]
         clusters = cluster_intents(intents, min_runs=3)
         self.assertEqual(clusters, [])
+
+
+class ClusterSessionRepetitionTests(unittest.TestCase):
+    def test_five_intents_one_session_is_not_repetition(self) -> None:
+        phrasings = [
+            "Fix the flaky authentication test in the login suite",
+            "Please fix flaky auth test inside login test suite",
+            "Repair the flaky login authentication test suite failure",
+            "Fix flaky auth tests that keep failing in login suite",
+            "Can you fix the flaky authentication tests in login",
+        ]
+        intents = [_intent(p, session_id="one-session") for p in phrasings]
+        clusters = cluster_intents(intents, min_runs=3)
+        self.assertEqual(clusters, [])
+
+    def test_five_intents_five_sessions_is_repetition(self) -> None:
+        phrasings = [
+            "Fix the flaky authentication test in the login suite",
+            "Please fix flaky auth test inside login test suite",
+            "Repair the flaky login authentication test suite failure",
+            "Fix flaky auth tests that keep failing in login suite",
+            "Can you fix the flaky authentication tests in login",
+        ]
+        intents = [
+            _intent(p, session_id=f"sess-{i}") for i, p in enumerate(phrasings)
+        ]
+        clusters = cluster_intents(intents, min_runs=3)
+        self.assertEqual(len(clusters), 1, clusters)
+        self.assertEqual(clusters[0].distinct_sessions, 5)
+        self.assertEqual(clusters[0].run_count, 5)
+
+
+    def test_labels_contain_no_angle_tags(self) -> None:
+        phrasings = [
+            "<timestamp>Monday, Aug 31, 2026, 3:13 PM (UTC-4)</timestamp>\n"
+            "Explore the repo for checkpoint wire proxy implementation",
+            "<timestamp>Monday, Aug 31, 2026, 4:10 PM (UTC-4)</timestamp>\n"
+            "Please explore the repo for checkpoint wire proxy implementation",
+            "<timestamp>Monday, Aug 31, 2026, 5:02 PM (UTC-4)</timestamp>\n"
+            "Explore the repository for checkpoint wire proxy implementation",
+            "<timestamp>Monday, Aug 31, 2026, 6:40 PM (UTC-4)</timestamp>\n"
+            "Can you explore the repo for checkpoint wire proxy implementation",
+            "<timestamp>Monday, Aug 31, 2026, 7:15 PM (UTC-4)</timestamp>\n"
+            "Explore this repo for checkpoint wire proxy implementation",
+        ]
+        intents = [
+            _intent(p, session_id=f"tag-{i}") for i, p in enumerate(phrasings)
+        ]
+        clusters = cluster_intents(intents, min_runs=3)
+        self.assertEqual(len(clusters), 1, [c.label for c in clusters])
+        for cluster in clusters:
+            self.assertNotIn("<", cluster.label, cluster.label)
+            self.assertNotIn("timestamp", cluster.label.lower())
 
 
 class ClusterLabelTests(unittest.TestCase):

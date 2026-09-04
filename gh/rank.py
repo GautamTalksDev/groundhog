@@ -32,6 +32,7 @@ class Candidate:
     cost_score: float
     stability: float
     run_count: int
+    distinct_sessions: int
     usd: float
     cost_basis: str
     recency_days: Optional[float]
@@ -83,10 +84,10 @@ def score_candidates(
 
     now = now or datetime.now(timezone.utc)
 
-    run_counts = [max(1, c.run_count) for c, _ in paired]
-    max_log_runs = math.log(max(run_counts)) if run_counts else 1.0
-    if max_log_runs <= 0:
-        max_log_runs = 1.0
+    session_counts = [max(1, c.distinct_sessions) for c, _ in paired]
+    max_log_sessions = math.log(max(session_counts)) if session_counts else 1.0
+    if max_log_sessions <= 0:
+        max_log_sessions = 1.0
 
     cost_magnitudes = [_cost_magnitude(cost) for _, cost in paired]
     max_log_cost = (
@@ -100,7 +101,7 @@ def score_candidates(
 
     candidates: list[Candidate] = []
     for (cluster, cost), variance in zip(paired, turn_variances):
-        frequency = math.log(max(1, cluster.run_count)) / max_log_runs
+        frequency = math.log(max(1, cluster.distinct_sessions)) / max_log_sessions
         cost_score = math.log(_cost_magnitude(cost) + 1.0) / max_log_cost
         if max_var > 0:
             stability = 1.0 - (variance / max_var)
@@ -129,6 +130,7 @@ def score_candidates(
                 cost_score=round(cost_score, 6),
                 stability=round(stability, 6),
                 run_count=cluster.run_count,
+                distinct_sessions=cluster.distinct_sessions,
                 usd=cost.usd,
                 cost_basis=cost.basis,
                 recency_days=recency_days,
@@ -144,7 +146,13 @@ def score_candidates(
         )
 
     candidates.sort(
-        key=lambda c: (-c.score, -c.run_count, -c.usd, c.label.lower())
+        key=lambda c: (
+            -c.score,
+            -c.distinct_sessions,
+            -c.run_count,
+            -c.usd,
+            c.label.lower(),
+        )
     )
     rollups = _project_rollups(candidates)
     return RankResult(candidates=candidates, project_rollups=rollups)
@@ -235,7 +243,7 @@ def _project_rollups(candidates: list[Candidate]) -> list[ProjectRollup]:
                 roll = ProjectRollup(project=project)
                 by_project[project] = roll
             roll.candidates += 1
-            roll.run_count += cand.run_count
+            roll.run_count += cand.distinct_sessions
             roll.input_tokens += cand.input_tokens
             roll.output_tokens += cand.output_tokens
             roll.cache_read_tokens += cand.cache_read_tokens

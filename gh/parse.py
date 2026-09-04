@@ -4,12 +4,63 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from gh.discover import SessionFile
+
+_RE_USER_QUERY = re.compile(
+    r"<user_query>(.*?)</user_query>",
+    re.DOTALL | re.IGNORECASE,
+)
+_RE_TIMESTAMP_TAG = re.compile(
+    r"<timestamp>(.*?)</timestamp>",
+    re.DOTALL | re.IGNORECASE,
+)
+_RE_CURSOR_WRAP_TAG = re.compile(
+    r"</?(?:timestamp|user_query)\b[^>]*>",
+    re.IGNORECASE,
+)
+_RE_CURSOR_CLOCK = re.compile(
+    r"(?:[A-Za-z]+,\s+)?"
+    r"(?P<month>[A-Za-z]+)\s+"
+    r"(?P<day>\d{1,2}),\s+"
+    r"(?P<year>\d{4}),\s+"
+    r"(?P<hour>\d{1,2}):(?P<minute>\d{2})\s*"
+    r"(?P<ampm>AM|PM)\s*"
+    r"(?:\((?:UTC\s*)?(?P<tzsign>[+-])?(?P<tzhours>\d{1,2})"
+    r"(?::(?P<tzmins>\d{2}))?\))?",
+    re.IGNORECASE,
+)
+_MONTHS = {
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
+}
 
 
 @dataclass
@@ -203,12 +254,94 @@ def _parse_file(sf: SessionFile) -> tuple[Optional[Session], int]:
     )
 
 
+def unwrap_cursor_text(text: str) -> tuple[str, Optional[str]]:
+    """Strip Cursor wrap tags. Returns (query_text, parsed_timestamp).
+
+    ``<user_query>`` inner content replaces the turn text when present.
+    ``<timestamp>`` is always removed from the returned text, even when
+    no ``<user_query>`` wrapper is present, so labels and evidence never
+    display raw metadata tags.
+    """
+    original = text or ""
+    tagged_ts: Optional[str] = None
+    ts_match = _RE_TIMESTAMP_TAG.search(original)
+    if ts_match:
+        tagged_ts = _parse_cursor_timestamp(ts_match.group(1))
+
+    query_match = _RE_USER_QUERY.search(original)
+    if query_match:
+        query = query_match.group(1).strip()
+    else:
+        query = original
+    query = _RE_TIMESTAMP_TAG.sub("", query)
+    query = _RE_USER_QUERY.sub(lambda m: m.group(1), query)
+    query = _RE_CURSOR_WRAP_TAG.sub("", query)
+    return query.strip(), tagged_ts
+
+
+def _parse_cursor_timestamp(raw: str) -> Optional[str]:
+    """Parse a Cursor ``<timestamp>`` value to ISO-8601, or None."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    iso_candidate = text.replace("Z", "+00:00") if text.endswith("Z") else text
+    try:
+        dt = datetime.fromisoformat(iso_candidate)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+    except ValueError:
+        pass
+
+    match = _RE_CURSOR_CLOCK.search(text)
+    if not match:
+        return None
+    month = _MONTHS.get(match.group("month").lower())
+    if month is None:
+        return None
+    try:
+        day = int(match.group("day"))
+        year = int(match.group("year"))
+        hour = int(match.group("hour"))
+        minute = int(match.group("minute"))
+    except (TypeError, ValueError):
+        return None
+    ampm = (match.group("ampm") or "").upper()
+    if ampm == "AM":
+        if hour == 12:
+            hour = 0
+    elif ampm == "PM":
+        if hour != 12:
+            hour += 12
+
+    tz_hours = match.group("tzhours")
+    if tz_hours is None:
+        offset = timezone.utc
+    else:
+        sign = -1 if match.group("tzsign") == "-" else 1
+        try:
+            hours = int(tz_hours)
+            mins = int(match.group("tzmins") or 0)
+        except ValueError:
+            return None
+        offset = timezone(timedelta(hours=sign * hours, minutes=sign * mins))
+
+    try:
+        dt = datetime(year, month, day, hour, minute, tzinfo=offset)
+    except ValueError:
+        return None
+    return dt.isoformat()
+
+
 def _turn_from_record(obj: dict, default_model: Optional[str] = None) -> Optional[Turn]:
     role = _extract_role(obj)
     text = _extract_text(obj)
     if role is None or text is None:
         return None
     text = text.strip()
+    if not text:
+        return None
+    text, tagged_ts = unwrap_cursor_text(text)
     if not text:
         return None
 
@@ -224,6 +357,8 @@ def _turn_from_record(obj: dict, default_model: Optional[str] = None) -> Optiona
             ),
         )
     )
+    if tagged_ts:
+        timestamp = tagged_ts
 
     input_tokens = _coerce_int(
         first_present(

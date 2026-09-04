@@ -57,4 +57,5 @@ The **NOT COUNTED** section of the report always lists what was missing, skipped
 
 ## Requirements
 
-Python 3 standard library only. No `pip install`. No `requirements.txt`.
+Python **3.8+**, standard library only. No `pip install`. No `requirements.txt`.
+(3.8 is the floor: Ubuntu 20.04 / Debian 11 era interpreters are supported; 3.7 is not.)

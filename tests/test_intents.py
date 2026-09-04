@@ -66,6 +66,47 @@ class SubstantiveTests(unittest.TestCase):
         )
 
 
+class ConversationalReplyTests(unittest.TestCase):
+    def test_rejects_markdown_emphasis_block(self) -> None:
+        self.assertFalse(
+            is_substantive(
+                '**Confirmed. "No commit found for SHA" on all three.** '
+                "The provenance is fabricated, not a real git object."
+            )
+        )
+
+    def test_rejects_multi_paragraph_analysis(self) -> None:
+        analysis = (
+            "The honesty path fired correctly — that's the hard part working, "
+            "and rank 2 recovering real steps proves recovery works.\n\n"
+            "But this output has just exposed something more important than "
+            "the feature, and you should see it clearly now.\n\n"
+            "Your ranker is surfacing conversation density, not repetition, "
+            "which is the opposite of the promise on the Play page."
+        )
+        self.assertFalse(is_substantive(analysis))
+
+    def test_rejects_fenced_prompt_quote(self) -> None:
+        pasted = (
+            "Paste into Cursor:\n\n"
+            "```\n"
+            "Fix a correctness bug: clusters can currently be formed from "
+            "multiple intents within a single session.\n"
+            "```\n"
+        )
+        self.assertFalse(is_substantive(pasted))
+
+    def test_rejects_over_length_ceiling(self) -> None:
+        padded = "Fix the flaky auth test in login.spec.ts. " + ("word " * 400)
+        self.assertGreater(len(padded), 1200)
+        self.assertFalse(is_substantive(padded))
+
+    def test_keeps_short_imperative_task(self) -> None:
+        self.assertTrue(
+            is_substantive("Fix the flaky auth test in login.spec.ts")
+        )
+
+
 class NewTaskTests(unittest.TestCase):
     def test_corrections_rejected_new_tasks_kept(self) -> None:
         self.assertFalse(is_new_task("actually make it blue instead"))
@@ -204,6 +245,21 @@ class CursorWrapTests(unittest.TestCase):
         self.assertEqual(intents[0].raw_text, plain)
         self.assertEqual(intents[0].timestamp, "2026-08-20T10:00:00Z")
         self.assertIn("flaky", intents[0].normalized)
+
+    def test_timestamp_without_user_query_is_stripped(self) -> None:
+        wrapped = (
+            "<timestamp>Monday, Aug 31, 2026, 3:13 PM (UTC-4)</timestamp>\n"
+            "Explore the GASKET repo for checkpoint wire proxy implementation"
+        )
+        session = _session([_turn("user", wrapped, timestamp=None)])
+        intents = extract_intents([session])
+        self.assertEqual(len(intents), 1)
+        self.assertNotIn("<", intents[0].raw_text)
+        self.assertNotIn("timestamp", intents[0].raw_text.lower())
+        self.assertTrue(
+            intents[0].raw_text.startswith("Explore the GASKET repo")
+        )
+        self.assertEqual(intents[0].timestamp, "2026-08-31T15:13:00-04:00")
 
     def test_normalized_truncates_at_400_raw_text_does_not(self) -> None:
         prefix = "Please implement the billing client retry logic now. "

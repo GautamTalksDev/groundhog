@@ -51,6 +51,7 @@ def main(argv: list[str]) -> int:
                 "first_seen": c.first_seen,
                 "last_seen": c.last_seen,
                 "run_count": c.run_count,
+                "distinct_sessions": c.distinct_sessions,
                 "cohesion": c.cohesion,
                 "members": [
                     {

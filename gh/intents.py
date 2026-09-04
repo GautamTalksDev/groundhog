@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 from typing import Iterable, Optional
 
-from gh.parse import Session, Turn
+from gh.parse import Session, Turn, unwrap_cursor_text
 
 
 @dataclass
@@ -303,55 +302,19 @@ _RE_NUM = re.compile(r"\b\d{3,}\b")
 _RE_QUOTED = re.compile(r"([\"'])(?:\\.|(?!\1).)*\1")
 _RE_PUNCT = re.compile(r"[^\w\s<>]+", re.UNICODE)
 _RE_SPACE = re.compile(r"\s+")
-_RE_USER_QUERY = re.compile(
-    r"<user_query>(.*?)</user_query>",
-    re.DOTALL | re.IGNORECASE,
-)
-_RE_TIMESTAMP_TAG = re.compile(
-    r"<timestamp>(.*?)</timestamp>",
-    re.DOTALL | re.IGNORECASE,
-)
-_RE_CURSOR_CLOCK = re.compile(
-    r"(?:[A-Za-z]+,\s+)?"
-    r"(?P<month>[A-Za-z]+)\s+"
-    r"(?P<day>\d{1,2}),\s+"
-    r"(?P<year>\d{4}),\s+"
-    r"(?P<hour>\d{1,2}):(?P<minute>\d{2})\s*"
-    r"(?P<ampm>AM|PM)\s*"
-    r"(?:\((?:UTC\s*)?(?P<tzsign>[+-])?(?P<tzhours>\d{1,2})"
-    r"(?::(?P<tzmins>\d{2}))?\))?",
-    re.IGNORECASE,
-)
-_MONTHS = {
-    "jan": 1,
-    "january": 1,
-    "feb": 2,
-    "february": 2,
-    "mar": 3,
-    "march": 3,
-    "apr": 4,
-    "april": 4,
-    "may": 5,
-    "jun": 6,
-    "june": 6,
-    "jul": 7,
-    "july": 7,
-    "aug": 8,
-    "august": 8,
-    "sep": 9,
-    "sept": 9,
-    "september": 9,
-    "oct": 10,
-    "october": 10,
-    "nov": 11,
-    "november": 11,
-    "dec": 12,
-    "december": 12,
-}
 
 # Truncate the comparison string only — raw_text stays full for evidence.
 _NORMALIZED_MAX_CHARS = 400
 _NORMALIZED_MAX_TOKENS = 30
+
+# A task request is short. Discursive replies (analysis, quoted prompts)
+# are not intents even when they contain an imperative verb.
+_MAX_INTENT_CHARS = 1200
+
+# A bold span covering a phrase/sentence, not a single **word**.
+_RE_EMPHASIS_BLOCK = re.compile(r"\*\*[^*\n]{12,}\*\*")
+# Opening fence followed by a newline = pasted block, not inline ```code```.
+_RE_FENCED_PROMPT = re.compile(r"```[^\n]*\n")
 
 # Shared prompt templates otherwise dominate the TF-IDF vocabulary and
 # merge unrelated work (GASKET + Keyring clustered on "implement the
@@ -506,31 +469,15 @@ def extract_intents(
     return intents
 
 
-def unwrap_cursor_text(text: str) -> tuple[str, Optional[str]]:
-    """Strip Cursor wrap tags. Returns (query_text, parsed_timestamp).
-
-    ``<user_query>`` inner content replaces the turn text when present.
-    ``<timestamp>`` is parsed when present and well-formed; otherwise None
-    so callers keep the existing turn/session timestamp fallback.
-    """
-    original = text or ""
-    tagged_ts: Optional[str] = None
-    ts_match = _RE_TIMESTAMP_TAG.search(original)
-    if ts_match:
-        tagged_ts = _parse_cursor_timestamp(ts_match.group(1))
-
-    query_match = _RE_USER_QUERY.search(original)
-    if query_match:
-        query = query_match.group(1).strip()
-    else:
-        query = original
-    return query, tagged_ts
-
-
 def is_substantive(text: str) -> bool:
     """True if text looks like a real user ask, not noise."""
-    cleaned = strip_leading_locative((text or "").strip())
+    raw = text or ""
+    if len(raw.strip()) > _MAX_INTENT_CHARS:
+        return False
+    cleaned = strip_leading_locative(raw.strip())
     stripped = _strip_boilerplate_phrases(cleaned)
+    if _is_conversational_reply(stripped):
+        return False
     collapsed = _RE_SPACE.sub(" ", stripped).strip()
     if len(collapsed) < 25:
         return False
@@ -676,60 +623,6 @@ def _to_intent(
     )
 
 
-def _parse_cursor_timestamp(raw: str) -> Optional[str]:
-    """Parse a Cursor ``<timestamp>`` value to ISO-8601, or None."""
-    text = (raw or "").strip()
-    if not text:
-        return None
-    iso_candidate = text.replace("Z", "+00:00") if text.endswith("Z") else text
-    try:
-        dt = datetime.fromisoformat(iso_candidate)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.isoformat()
-    except ValueError:
-        pass
-
-    match = _RE_CURSOR_CLOCK.search(text)
-    if not match:
-        return None
-    month = _MONTHS.get(match.group("month").lower())
-    if month is None:
-        return None
-    try:
-        day = int(match.group("day"))
-        year = int(match.group("year"))
-        hour = int(match.group("hour"))
-        minute = int(match.group("minute"))
-    except (TypeError, ValueError):
-        return None
-    ampm = (match.group("ampm") or "").upper()
-    if ampm == "AM":
-        if hour == 12:
-            hour = 0
-    elif ampm == "PM":
-        if hour != 12:
-            hour += 12
-
-    tz_hours = match.group("tzhours")
-    if tz_hours is None:
-        offset = timezone.utc
-    else:
-        sign = -1 if match.group("tzsign") == "-" else 1
-        try:
-            hours = int(tz_hours)
-            mins = int(match.group("tzmins") or 0)
-        except ValueError:
-            return None
-        offset = timezone(timedelta(hours=sign * hours, minutes=sign * mins))
-
-    try:
-        dt = datetime(year, month, day, hour, minute, tzinfo=offset)
-    except ValueError:
-        return None
-    return dt.isoformat()
-
-
 def _session_usage(session: Session) -> dict:
     """Aggregate per-session token fields; None means absent (not zero)."""
     input_total = 0
@@ -812,6 +705,42 @@ def _is_continuation(text: str) -> bool:
     compact = _RE_SPACE.sub(" ", text.strip().lower())
     compact = _RE_PUNCT.sub("", compact).strip()
     return compact in _CONTINUATIONS
+
+
+def _is_conversational_reply(text: str) -> bool:
+    """True for a discursive reply to the assistant, not a task request.
+
+    Task requests are short and imperative. Replies are long analysis,
+    markdown-formatted status, or a pasted prompt in a fenced block.
+    """
+    raw = text or ""
+    stripped = raw.lstrip()
+    if stripped.startswith("**"):
+        return True
+    if _RE_EMPHASIS_BLOCK.search(raw):
+        return True
+    if _is_multi_paragraph_analysis(raw):
+        return True
+    if _RE_FENCED_PROMPT.search(raw):
+        return True
+    return False
+
+
+def _is_multi_paragraph_analysis(text: str) -> bool:
+    paragraphs = [
+        p.strip() for p in re.split(r"\n\s*\n", text or "") if p.strip()
+    ]
+    # Punctuation-only leftovers after boilerplate stripping are not analysis.
+    substantive = [
+        p for p in paragraphs if re.search(r"[A-Za-z]{3,}", p)
+    ]
+    if len(substantive) >= 3:
+        return True
+    if len(substantive) >= 2:
+        long_paras = [p for p in substantive if len(p) >= 180]
+        if len(long_paras) >= 2:
+            return True
+    return False
 
 
 def _has_imperative(text: str) -> bool:

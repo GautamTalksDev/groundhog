@@ -36,6 +36,7 @@ class CandidateView:
     rank: int
     label: str
     run_count: int
+    distinct_sessions: int
     first_seen: str
     last_seen: str
     projects: list[str]
@@ -187,17 +188,14 @@ def render_text(report: Report) -> str:
             for loc in report.locations_checked:
                 lines.append(f"  {loc}")
     elif not report.candidates:
-        lines.append(
-            f"Nothing you've repeated {report.min_runs}+ times in this "
-            "window. Try --days 30 or --min-runs 2."
-        )
+        lines.append(_empty_repeat_message(report.days, report.min_runs))
     else:
         for cand in report.candidates:
             projects = ", ".join(cand.projects) or "unknown"
             lines.append("")
             lines.append(f"{cand.rank}. {cand.label}")
             lines.append(
-                f"   {_format_timespan(cand.run_count, cand.first_seen, cand.last_seen)}"
+                f"   {_format_timespan(cand.distinct_sessions, cand.first_seen, cand.last_seen)}"
                 f" · {projects}"
             )
             lines.append(
@@ -259,6 +257,7 @@ def render_json(report: Report) -> str:
                 "rank": c.rank,
                 "label": c.label,
                 "run_count": c.run_count,
+                "distinct_sessions": c.distinct_sessions,
                 "first_seen": c.first_seen,
                 "last_seen": c.last_seen,
                 "projects": c.projects,
@@ -355,6 +354,7 @@ def _candidate_view(
         rank=rank,
         label=label,
         run_count=cand.run_count,
+        distinct_sessions=cand.distinct_sessions,
         first_seen=_short_date(cand.first_seen),
         last_seen=_short_date(cand.last_seen),
         projects=sorted(cand.projects),
@@ -390,7 +390,7 @@ def _projects_from_candidates(candidates: list[Candidate]) -> list[ProjectView]:
                 )
                 by_project[project] = view
             view.candidates += 1
-            view.run_count += cand.run_count
+            view.run_count += cand.distinct_sessions
             view.input_tokens += cand.input_tokens
             view.output_tokens += cand.output_tokens
             view.cache_read_tokens += cand.cache_read_tokens
@@ -493,11 +493,38 @@ def _not_counted_lines(
     return items
 
 
-def _format_timespan(run_count: int, first_seen: str, last_seen: str) -> str:
-    """Same calendar day → ``N times on DATE``; else an arrow range."""
+def _empty_repeat_message(days: int, min_runs: int) -> str:
+    """Empty-state copy that matches the window and threshold actually used."""
+    core = (
+        f"No chore repeated across {min_runs}+ separate sessions "
+        f"in the last {days} days."
+    )
+    if days >= 30:
+        return (
+            core
+            + " Groundhog needs several months of history before "
+            "patterns emerge for most people."
+        )
+    hints: list[str] = []
+    if days < 30:
+        hints.append("--days 30")
+    if min_runs > 2:
+        hints.append("--min-runs 2")
+    if hints:
+        return f"{core} Try {' or '.join(hints)}."
+    return core
+
+
+def _format_timespan(
+    distinct_sessions: int, first_seen: str, last_seen: str
+) -> str:
+    """Same calendar day → ``N times on DATE``; else an arrow range.
+
+    ``N`` is distinct sessions, not turns inside one conversation.
+    """
     if first_seen and last_seen and first_seen == last_seen:
-        return f"{run_count} times on {first_seen}"
-    return f"{run_count} times · {first_seen} → {last_seen}"
+        return f"{distinct_sessions} times on {first_seen}"
+    return f"{distinct_sessions} times · {first_seen} → {last_seen}"
 
 
 def _harness_label(name: str) -> str:

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-from gh.intents import Intent
+from gh.intents import Intent, strip_leading_locative
+from gh.parse import unwrap_cursor_text
 
 # Cosine threshold for joining an existing cluster.
 # Higher → fewer, tighter clusters (precision). Lower → more merges (recall).
@@ -15,6 +17,97 @@ SIMILARITY_THRESHOLD = 0.45
 
 # Post-cluster cohesion floor. Clusters looser than this are dropped.
 MIN_COHESION = 0.35
+
+# Stranger-facing label length — truncate on a word boundary.
+_LABEL_LIMIT = 70
+
+# Leading reply / status openers make poor chore labels.
+_LABEL_PENALTY_PREFIXES = (
+    "confirmed",
+    "fair —",
+    "fair—",
+    "fair -",
+    "fair,",
+    "fair ",
+    "you're right",
+    "you’re right",
+    "youre right",
+    "sorry",
+    "thanks",
+    "thank you",
+    "okay",
+    "ok,",
+    "yes,",
+    "yeah,",
+)
+
+# Leading verbs that read as an ask (subset; used only for label choice).
+_LABEL_VERBS = frozenset(
+    {
+        "add",
+        "build",
+        "change",
+        "check",
+        "clean",
+        "compare",
+        "configure",
+        "create",
+        "debug",
+        "delete",
+        "deploy",
+        "design",
+        "document",
+        "explore",
+        "explain",
+        "extract",
+        "find",
+        "fix",
+        "generate",
+        "harden",
+        "implement",
+        "improve",
+        "inspect",
+        "investigate",
+        "migrate",
+        "move",
+        "optimize",
+        "parse",
+        "patch",
+        "refactor",
+        "remove",
+        "rename",
+        "replace",
+        "rewrite",
+        "run",
+        "scaffold",
+        "set",
+        "ship",
+        "show",
+        "simplify",
+        "summarize",
+        "test",
+        "update",
+        "upgrade",
+        "verify",
+        "wire",
+        "write",
+        "review",
+        "resolve",
+        "support",
+        "install",
+        "make",
+        "help",
+        "please",
+        "can",
+        "could",
+        "would",
+        "need",
+        "look",
+        "read",
+        "re-run",
+        "rerun",
+    }
+)
 
 # Placeholders / ultra-generic tokens do not count as content words in labels.
 _NON_CONTENT = frozenset(
@@ -93,8 +186,13 @@ class Cluster:
     last_seen: Optional[str]
     run_count: int
     cohesion: float
+    # Unique session_id values among members. Repetition is sessions, not turns.
+    distinct_sessions: int = 0
     # Internal: running TF-IDF centroid (term → weight). Not for callers.
     _centroid: dict[str, float] = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        self.distinct_sessions = _distinct_session_count(self.members)
 
 
 def cluster_intents(
@@ -130,7 +228,9 @@ def cluster_intents(
         finalized.append(cluster)
 
     filtered = _precision_filter(finalized, min_runs=min_runs)
-    filtered.sort(key=lambda c: (-c.run_count, -c.cohesion, c.label.lower()))
+    filtered.sort(
+        key=lambda c: (-c.distinct_sessions, -c.cohesion, c.label.lower())
+    )
     # Re-number for stable dump output after filtering/sorting.
     for i, cluster in enumerate(filtered, 1):
         cluster.id = f"c{i}"
@@ -200,12 +300,13 @@ def _new_cluster(seq: int, intent: Intent, vec: dict[str, float]) -> Cluster:
     return Cluster(
         id=f"c{seq}",
         members=[intent],
-        label=_truncate(intent.raw_text, 90),
+        label=clean_label(intent.raw_text),
         projects={intent.project},
         first_seen=intent.timestamp,
         last_seen=intent.timestamp,
         run_count=1,
         cohesion=1.0,
+        distinct_sessions=1,
         _centroid=dict(vec),
     )
 
@@ -225,6 +326,7 @@ def _add_to_cluster(
     cluster.members.append(intent)
     cluster.projects.add(intent.project)
     cluster.run_count = len(cluster.members)
+    cluster.distinct_sessions = _distinct_session_count(cluster.members)
     ts = intent.timestamp
     if ts:
         if cluster.first_seen is None or ts < cluster.first_seen:
@@ -249,9 +351,9 @@ def _finalize(
             member_vecs.append(all_vectors[idx])
 
     cluster.cohesion = _mean_pairwise(member_vecs)
-    medoid = _medoid(cluster.members, member_vecs)
-    cluster.label = _truncate(medoid.raw_text if medoid else cluster.label, 90)
+    cluster.label = choose_cluster_label(cluster.members, member_vecs)
     cluster.run_count = len(cluster.members)
+    cluster.distinct_sessions = _distinct_session_count(cluster.members)
     cluster.projects = {m.project for m in cluster.members}
 
     timestamps = [m.timestamp for m in cluster.members if m.timestamp]
@@ -301,7 +403,7 @@ def _precision_filter(
 
     kept: list[Cluster] = []
     for cluster in clusters:
-        if cluster.run_count < min_runs:
+        if cluster.distinct_sessions < min_runs:
             continue
         if cluster.cohesion < MIN_COHESION:
             continue
@@ -315,6 +417,10 @@ def _precision_filter(
             continue
         kept.append(cluster)
     return kept
+
+
+def _distinct_session_count(members: list[Intent]) -> int:
+    return len({m.session_id for m in members})
 
 
 def _content_word_count(label: str) -> int:
@@ -332,8 +438,98 @@ def _content_word_count(label: str) -> int:
     return len(cleaned)
 
 
+def choose_cluster_label(
+    members: list[Intent], vectors: list[dict[str, float]]
+) -> str:
+    """Pick a stranger-facing chore label from cluster members.
+
+    Prefer an imperative ask. Among imperative members, prefer the TF-IDF
+    medoid. If nothing reads as a task, fall back to the medoid as before.
+    Clustering membership is unchanged — this only picks the display string.
+    """
+    if not members:
+        return ""
+    medoid = _medoid(members, vectors) or members[0]
+    scored = [(label_imperative_score(m.raw_text), m) for m in members]
+    imperatives = [m for score, m in scored if score > 0]
+    if imperatives:
+        if medoid in imperatives:
+            chosen = medoid
+        else:
+            chosen = max(
+                imperatives,
+                key=lambda m: label_imperative_score(m.raw_text),
+            )
+    else:
+        chosen = medoid
+    return clean_label(chosen.raw_text)
+
+
+def label_imperative_score(text: str) -> float:
+    """Higher = better chore label. Negative = conversational / status reply."""
+    raw = (text or "").lstrip()
+    if not raw:
+        return -100.0
+    if raw.startswith("**") or raw.startswith("*"):
+        return -50.0
+    if raw[0] in "\"'`“”‘’":
+        return -50.0
+    lower = raw.lower()
+    for prefix in _LABEL_PENALTY_PREFIXES:
+        if lower.startswith(prefix):
+            return -50.0
+    probe = strip_leading_locative(raw)
+    probe = probe.lstrip("*_\"'`“”‘’ \t")
+    tokens = re.findall(r"[a-z0-9]+(?:-[a-z0-9]+)?", probe.lower())
+    if not tokens:
+        return -10.0
+    for i, tok in enumerate(tokens[:5]):
+        if tok in _LABEL_VERBS:
+            return 10.0 - (0.1 * i)
+        if tok in {"please", "you", "me", "us", "to", "the", "a", "an"}:
+            continue
+        break
+    return 0.0
+
+
+def clean_label(text: str, limit: int = _LABEL_LIMIT) -> str:
+    """Strip markdown/locatives and truncate on a word boundary."""
+    s, _ = unwrap_cursor_text(text or "")
+    s = s.lstrip()
+    # Leading markdown emphasis (**bold**, *italics*, _).
+    while s.startswith("**"):
+        s = s[2:]
+    s = s.lstrip("*_ \t")
+    # Drop conversational openers left after markdown strip.
+    lower = s.lower()
+    for prefix in _LABEL_PENALTY_PREFIXES:
+        if lower.startswith(prefix):
+            s = s[len(prefix) :].lstrip(" .,;:—-")
+            lower = s.lower()
+            break
+    # Unwrap a leading quoted clause before nibbling quote chars.
+    quoted = re.match(r'^[\"“]([^\"”]+)[\"”]\s*', s)
+    if quoted:
+        s = (quoted.group(1) + " " + s[quoted.end() :]).strip()
+    while s and s[0] in "\"'`“”‘’":
+        s = s[1:]
+    s = strip_leading_locative(s)
+    # Plan-card scaffolding: keep the headline before "Prompt:".
+    prompt_at = re.search(r"\s+Prompt:\s*", s, flags=re.IGNORECASE)
+    if prompt_at and prompt_at.start() >= 12:
+        s = s[: prompt_at.start()].rstrip()
+    s = s.replace("**", "")
+    s = " ".join(s.split())
+    if len(s) <= limit:
+        return s
+    cut = s[:limit]
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    cut = cut.rstrip(".,;:!?—- ")
+    if not cut:
+        cut = s[: max(1, limit - 1)]
+    return cut + "…"
+
+
 def _truncate(text: str, limit: int) -> str:
-    text = " ".join((text or "").split())
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1].rstrip() + "…"
+    return clean_label(text, limit=limit)
